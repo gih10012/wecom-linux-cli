@@ -14,6 +14,7 @@ from .keys import capture
 from .resources import measure
 from .messages import configure, conversations, messages
 from .sending import preflight, send_text, send_status
+from .media import export as export_media
 
 
 def main() -> int:
@@ -50,6 +51,12 @@ def main() -> int:
             send.add_argument("--request-id", required=True)
     send_query = sub.add_parser("send-status", help="Read/reconcile an existing request; never sends")
     send_query.add_argument("--request-id", required=True)
+    media = sub.add_parser("media", help="Export hash-verified full media from the client cache")
+    media_sub = media.add_subparsers(dest="media_command", required=True)
+    media_export = media_sub.add_parser("export", help="Currently external WeChat PNG/JPEG images only")
+    media_export.add_argument("--account", default="me")
+    media_export.add_argument("--chat", required=True)
+    media_export.add_argument("--message-id", type=int, required=True)
     for command in ("conversations", "messages"):
         read = sub.add_parser(command, help="Read locally synced owner history")
         read.add_argument("--account", default="me")
@@ -80,6 +87,8 @@ def main() -> int:
             result = send_text(args.account, args.chat, args.text, args.request_id)
         elif args.command == "send-status":
             result = send_status(args.request_id)
+        elif args.command == "media":
+            result = export_media(args.account, args.chat, args.message_id)
         else:
             result = inspect(args.database, args.key_file)
     except (OSError, ValueError, sqlite3.DatabaseError, subprocess.TimeoutExpired) as exc:

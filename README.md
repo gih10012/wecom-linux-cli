@@ -24,6 +24,7 @@ wecom-linux messages --chat 'EXACT_CHAT_ID' --all
 wecom-linux send-preflight --chat 'EXACT_CHAT_ID' --text '文字'
 wecom-linux send-text --chat 'EXACT_CHAT_ID' --text '文字' --request-id 'unique-request-01'
 wecom-linux send-status --request-id 'unique-request-01'
+wecom-linux media export --chat 'EXACT_CHAT_ID' --message-id 123
 ```
 
 `status` inspects the configured Wine client without starting it. Local
@@ -83,7 +84,20 @@ Observed Windows text types preserve the entire body, including whitespace,
 newlines and emoji. Unknown content retains complete stored fields and binary
 content as base64, rather than claiming a guessed text body. Sender and server
 IDs are strings to preserve their integer precision. Media references are
-returned; media downloads and viewing are not implied.
+returned; references alone do not prove downloaded or viewed media.
+
+`media export` currently supports external WeChat image type101. It resolves
+the original reference through the account's plaintext CacheMapping database,
+including committed WAL changes, and requires the message's original size and
+MD5 to match the cached bytes. It copies verified PNG/JPEG bytes into private
+`attachments/` with mode0600 and returns the path/SHA-256. It neither fetches
+remote media nor substitutes thumbnails. If the original is absent, open that
+image normally in the client and then export again. Other types and missing
+remote originals remain unsupported. The exact chat/message scope and cache
+path containment are checked before reading. Real 2026-10-01 acceptance used
+a personal WeChat CLI PNG received in the corresponding authorized WeCom
+chat: both UIs displayed it and the exported original matched input bytes.
+JPEG exports and other attachment formats still need separate real acceptance.
 
 2026-10-01 local acceptance verified real private/group history, default
 pagination, all synced rows in a selected conversation, and an independently
@@ -125,10 +139,22 @@ both sides found each full Chinese/newline/emoji body exactly once with
 nonzero server IDs; both client windows displayed them. Same-ID replay did
 not duplicate the message and a changed body was rejected. A preceding native
 file-helper candidate also had the owner's phone confirmation. This does not
-verify arbitrary groups, every media format or restart stability.
+verify arbitrary groups or every media format. Three subsequent normal tray
+exits and client restarts restored the configured account without new login,
+reused the private key and prior request records, and passed construct-only
+native preflights in each new process. A new text after the third restart was
+independently received exactly once; replay did not duplicate it. The send
+worked with the monitor off and no selected chat. Two timed client restarts
+reached the native preflight in about 3.6 seconds with an existing Wine runtime.
+This is not a whole-Wine cold-start or long-duration stability measurement.
+Five-second client-group samples used roughly 4.4–5.6 GiB PSS; observed CPU
+ranged from 9–18% of one core while idle and about 20% in one send window.
+These are short samples, not continuous resource bounds.
 
-Development acceptance still requires native media sends and downloads,
-school workbench integration, and resource and restart measurements. GUI results and generated test data do not prove native
+Development acceptance still requires native media sends and remote/missing
+original downloads beyond the verified PNG cache export,
+school workbench integration, offline-gap coverage and longer stability/resource
+measurements. Residency remains an owner decision; no autostart is added. GUI results and generated test data do not prove native
 CLI message support. No application autostart or background receiver is
 installed by this project.
 
