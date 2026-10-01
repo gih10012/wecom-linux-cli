@@ -54,27 +54,62 @@ static void preflight(Trial *t) {
      *(DWORD*)env==(DWORD)(uintptr_t)ADDRESS(0xbe318e4) && account_matches(env,t->expected_self_id))t->manager_verified=1;
  }
  if(!t->manager_verified) {t->failure=11;return;}
- String text={0};unsigned n=strnlen(t->text,TEXT_MAX);
- if(!n || n>=TEXT_MAX || !t->chat[0] || strnlen(t->chat,256)==256) {t->failure=12;return;}
- text.length=n;
- if(n<=15) {memcpy(text.bytes,t->text,n);text.capacity=15;}
- else {memcpy(text.bytes,&(char*){t->text},4);text.capacity=n;}
- Shared model={0},info={0};
+
+ unsigned n=strnlen(t->text,TEXT_MAX);
+ if(!n || n>=TEXT_MAX || !t->chat[0] || strnlen(t->chat,256)==256 ||
+    (t->input_kind!=2 && t->input_kind!=7)) {t->failure=12;return;}
+ Shared model={0},info={0};Shared *rich=NULL;
  Factory make;Allocate allocate;Constructor construct;Assign assign;Release release;
  void *ptr=ADDRESS(0x8545200);memcpy(&make,&ptr,4);
  ptr=ADDRESS(0xa41edf4);memcpy(&allocate,&ptr,4);
  ptr=ADDRESS(0x2a93b50);memcpy(&construct,&ptr,4);
  ptr=ADDRESS(0x5f768a);memcpy(&assign,&ptr,4);
  ptr=ADDRESS(0x66c5a0);memcpy(&release,&ptr,4);
- make(&model,&text);
- if(!valid(model.pointer,0x268) || !valid(model.control,12) || *(DWORD*)model.control!=(DWORD)(uintptr_t)ADDRESS(0xb365c90)) {t->failure=13;return;}
- t->model_constructed=1;
- unsigned char *m=(unsigned char*)model.pointer;t->message_type=*(DWORD*)(m+0x50);
- Shared *rich=(Shared*)(m+0x208);
- if(valid(rich->control,12) && valid(rich->pointer,32) && *(DWORD*)rich->pointer==(DWORD)(uintptr_t)ADDRESS(0xb372328))t->rich_present=1;
- String *content=(String*)(m+0x1b8);char *body=content->capacity>15?*(char**)content->bytes:(char*)content->bytes;
- if(content->length<TEXT_MAX && valid(body,content->length)) {t->rich_size=content->length;memcpy(t->serialized,body,content->length);}
- if(t->message_type!=2 || !t->rich_present || !t->rich_size) {
+ String text={0};text.length=n;
+ if(n<=15) {memcpy(text.bytes,t->text,n);text.capacity=15;}
+ else {memcpy(text.bytes,&(char*){t->text},4);text.capacity=n;}
+ if(t->input_kind==2) {
+  make(&model,&text);
+  if(!valid(model.pointer,0x268) || !valid(model.control,12) || *(DWORD*)model.control!=(DWORD)(uintptr_t)ADDRESS(0xb365c90)) {t->failure=13;return;}
+  t->model_constructed=1;
+  unsigned char *m=(unsigned char*)model.pointer;t->message_type=*(DWORD*)(m+0x50);
+  rich=(Shared*)(m+0x208);
+  if(valid(rich->control,12) && valid(rich->pointer,32) && *(DWORD*)rich->pointer==(DWORD)(uintptr_t)ADDRESS(0xb372328))t->rich_present=1;
+  String *content=(String*)(m+0x1b8);char *body=content->capacity>15?*(char**)content->bytes:(char*)content->bytes;
+  if(content->length<TEXT_MAX && valid(body,content->length)) {t->rich_size=content->length;memcpy(t->serialized,body,content->length);}
+ } else {
+  if(!t->width || !t->height || t->width>32768 || t->height>32768 ||
+     !t->filename[0] || strnlen(t->filename,1024)==1024 ||
+     (strncmp(t->text,"Z:\\",3) && strncmp(t->text,"C:\\",3))) {t->failure=12;return;}
+  if(memcmp(ADDRESS(0x1ae65a0),(unsigned char[]){0x66,0x90,0x55,0x8b,0xec,0x6a,0xff,0x68},8) ||
+     memcmp(ADDRESS(0x802c00),(unsigned char[]){0x55,0x8b,0xec,0x6a,0xff,0x68,0x34,0xbf},8) ||
+     memcmp(ADDRESS(0xa1900b0),(unsigned char[]){0x55,0x8b,0xec,0x6a,0xff,0x68,0x3e,0xa4},8) ||
+     memcmp(ADDRESS(0x5f79e0),(unsigned char[]){0xe9,0xc2,0xff,0xff,0xff,0xcc,0xcc,0xcc},8)) {t->failure=18;return;}
+  typedef void *(__thiscall *CopyString)(void*,const String*);
+  typedef String *(__thiscall *Serialize)(void*,String*);
+  typedef void (__thiscall *DestroyString)(String*);
+  CopyString copy;Serialize serialize;DestroyString destroy;Constructor file_construct;
+  ptr=ADDRESS(0x802c00);memcpy(&copy,&ptr,4);
+  ptr=ADDRESS(0xa1900b0);memcpy(&serialize,&ptr,4);
+  ptr=ADDRESS(0x5f79e0);memcpy(&destroy,&ptr,4);
+  ptr=ADDRESS(0x1ae65a0);memcpy(&file_construct,&ptr,4);
+  DWORD *file_block=(DWORD*)allocate(0xe0);if(!file_block) {t->failure=14;return;}
+  memset(file_block,0,0xe0);file_block[0]=(DWORD)(uintptr_t)ADDRESS(0xb4047dc);file_block[1]=1;file_block[2]=1;
+  model.pointer=(unsigned char*)file_block+0x10;model.control=file_block;
+  file_construct(model.pointer);t->model_constructed=1;rich=&model;
+  unsigned char *file=(unsigned char*)model.pointer;
+  if(*(DWORD*)file!=(DWORD)(uintptr_t)ADDRESS(0xb3721e8)) {t->failure=13;release(&model);t->model_released=1;return;}
+  String filename={0},encoded={0};unsigned size=(unsigned)strlen(t->filename);filename.length=size;
+  if(size<=15){memcpy(filename.bytes,t->filename,size);filename.capacity=15;}
+  else{memcpy(filename.bytes,&(char*){t->filename},4);filename.capacity=size;}
+  copy(file+0x24,&filename);copy(file+0x80,&text);
+  *(DWORD*)(file+0x14)=0x61000002;*(DWORD*)(file+0x98)=t->width;*(DWORD*)(file+0x9c)=t->height;
+  t->message_type=7;t->rich_present=1;
+  serialize(file,&encoded);char *body=encoded.capacity>15?*(char**)encoded.bytes:(char*)encoded.bytes;
+  if(encoded.length && encoded.length<TEXT_MAX && valid(body,encoded.length)) {t->rich_size=encoded.length;memcpy(t->serialized,body,encoded.length);}
+  destroy(&encoded);
+ }
+ if(t->message_type!=t->input_kind || !t->rich_present || !t->rich_size) {
   t->failure=15;release(&model);t->model_released=1;return;
  }
  DWORD *block=(DWORD*)allocate(0x138);
@@ -87,7 +122,7 @@ static void preflight(Trial *t) {
  Shared *destination=(Shared*)((unsigned char*)info.pointer+0x1c);*destination=*rich;
  if(rich->control)InterlockedIncrement((LONG*)((unsigned char*)rich->control+4));
  t->info_constructed=1;
- if(t->message_type!=2 || !t->rich_present || !t->rich_size)t->failure=15;
+ if(t->message_type!=t->input_kind || !t->rich_present || !t->rich_size)t->failure=15;
  if(t->mode==2 && !t->failure) {
 #if WECOM_ENABLE_SEND
   const unsigned char signature[8]={0x66,0x90,0x55,0x8b,0xec,0x6a,0xff,0x68};
@@ -95,6 +130,13 @@ static void preflight(Trial *t) {
   else {Send send;void *entry=ADDRESS(0x9a07990);memcpy(&send,&entry,4);unsigned char progress[40]={0},callback[40]={0};
    InterlockedExchange((LONG*)&t->send_entered,1);
    send(manager,t->ids,&info,progress,callback);t->returned=1;
+   if(t->input_kind==7) {
+    t->info_references=*(DWORD*)((unsigned char*)info.control+4);
+    t->rich_references=*(DWORD*)((unsigned char*)model.control+4);
+    /* Native async owners hold the image after these temporary references
+     * are dropped. Otherwise retain the two small handles until client exit. */
+    if(t->info_references<=1 && t->rich_references<=2) {t->handles_retained=1;return;}
+   }
   }
 #else
   t->failure=17;

@@ -38,7 +38,7 @@ int wmain(int argc,wchar_t **argv) {
  t->creation=expected;t->mode=mode;t->expected_self_id=_wcstoui64(argv[12],NULL,10);
  wcsncpy(t->executable,path,511);
  input=_wfopen(argv[9],L"rb");if(!input)goto cleanup;
- if(fread(t->chat,1,256,input)!=256 || fread(t->text,1,TEXT_MAX,input)!=TEXT_MAX || fgetc(input)!=EOF)goto cleanup;
+ if(fread(t->chat,1,256,input)!=256 || fread(t->text,1,TEXT_MAX,input)!=TEXT_MAX || fread(&t->input_kind,4,1,input)!=1 || fread(&t->width,4,1,input)!=1 || fread(&t->height,4,1,input)!=1 || fread(t->filename,1,1024,input)!=1024 || fgetc(input)!=EOF)goto cleanup;
  fclose(input);input=NULL;t->manager=wcstoul(argv[10],NULL,16);
  dll=LoadLibraryW(argv[6]);FARPROC proc=dll?GetProcAddress(dll,"wecom_hook"):NULL;
  HOOKPROC callback=NULL;memcpy(&callback,&proc,sizeof(callback));
@@ -61,12 +61,12 @@ cleanup:
  if(hook)removed=UnhookWindowsHookEx(hook);
  if(result==0)error=0;
  else if(!error)error=GetLastError();
- printf("{\"ok\":%s,\"delivered\":%s,\"hook_removed\":%s,\"state\":%ld,\"failure\":%lu,\"win32_error\":%lu,\"client_running_untraced\":%s,\"native_send_entered\":%s,\"send_returned\":%s,\"model_constructed\":%lu,\"info_constructed\":%lu,\"model_released\":%lu,\"info_released\":%lu,\"manager_verified\":%lu,\"rich_size\":%lu,\"ids\":[%lu,%lu,%lu,%lu]}\n",
+ printf("{\"ok\":%s,\"delivered\":%s,\"hook_removed\":%s,\"state\":%ld,\"failure\":%lu,\"win32_error\":%lu,\"client_running_untraced\":%s,\"native_send_entered\":%s,\"send_returned\":%s,\"model_constructed\":%lu,\"info_constructed\":%lu,\"model_released\":%lu,\"info_released\":%lu,\"manager_verified\":%lu,\"rich_size\":%lu,\"native_handles_retained\":%lu,\"info_references_after_send\":%lu,\"rich_references_after_send\":%lu,\"ids\":[%lu,%lu,%lu,%lu]}\n",
  result==0?"true":"false",delivered?"true":"false",removed?"true":"false",
  t?t->state:0,t?t->failure:0,error,alive?"true":"false",
  t&&t->send_entered?"true":"false",t&&t->returned?"true":"false",
  t?t->model_constructed:0,t?t->info_constructed:0,t?t->model_released:0,t?t->info_released:0,
- t?t->manager_verified:0,t?t->rich_size:0,t?t->ids[0]:0,t?t->ids[1]:0,t?t->ids[2]:0,t?t->ids[3]:0);
+ t?t->manager_verified:0,t?t->rich_size:0,t?t->handles_retained:0,t?t->info_references:0,t?t->rich_references:0,t?t->ids[0]:0,t?t->ids[1]:0,t?t->ids[2]:0,t?t->ids[3]:0);
  if(input)fclose(input);
  if(output)fclose(output);
  if(dll)FreeLibrary(dll);

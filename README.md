@@ -2,7 +2,7 @@
 
 Local tools for the account owner's WeCom client on Linux. Reads locally
 synced conversations and messages from an isolated official Windows client
-under Wine, including committed WAL changes, and sends native personal text
+under Wine, including committed WAL changes, and sends native personal text and PNG/JPEG images
 through the running client. This project is
 independent of Tencent's official `wecom-cli`, whose bot channel has a
 different identity and scope.
@@ -23,6 +23,8 @@ wecom-linux messages --chat 'EXACT_CHAT_ID' --cursor 'RETURNED_CURSOR'
 wecom-linux messages --chat 'EXACT_CHAT_ID' --all
 wecom-linux send-preflight --chat 'EXACT_CHAT_ID' --text '文字'
 wecom-linux send-text --chat 'EXACT_CHAT_ID' --text '文字' --request-id 'unique-request-01'
+wecom-linux send-image-preflight --chat 'EXACT_CHAT_ID' --image '/path/image.png'
+wecom-linux send-image --chat 'EXACT_CHAT_ID' --image '/path/图片.jpg' --request-id 'unique-image-01'
 wecom-linux send-status --request-id 'unique-request-01'
 wecom-linux media export --chat 'EXACT_CHAT_ID' --message-id 123
 ```
@@ -100,38 +102,52 @@ a personal WeChat CLI PNG received in the corresponding authorized WeCom
 chat: both UIs displayed it and the exported original matched input bytes.
 An image sent through the normal WeCom GUI produced type14 and reached the
 authorized personal WeChat peer once; its full cached PNG export also matched
-the original bytes. That GUI observation does not verify native CLI image sending.
-JPEG exports and other attachment formats still need separate real acceptance.
+the original bytes. On 2026-10-02, installed ordinary native CLI PNG and Chinese-filename
+JPEG sends each reached the authorized personal WeChat peer once; both UIs
+displayed them and each cached-original export matched its input bytes.
+External type101 JPEG exports and other attachment formats still need separate acceptance.
 
 2026-10-01 local acceptance verified real private/group history, default
 pagination, all synced rows in a selected conversation, and an independently
 read new GUI-generated text message with Chinese, newline and emoji. This
 proves CLI reads, not complete cloud history.
 
-Native text sending supports only the SHA-256-pinned official Windows
+Native text and image sending supports only the SHA-256-pinned official Windows
 5.0.11.6018 executable under the configured isolated Wine prefix. It requires
 32-bit MinGW on the first use, one untraced client, a unique native manager and
 the configured account's current user ID. A same-thread Windows message hook
 constructs native message objects with the client's allocator and releases
 its references with the client's destructors. Each send first performs a
 construct-only preflight using the same artifact and verifies the exact
-serialized Chinese/UTF-8 body. Native dispatch does not type into a window,
+serialized Chinese/UTF-8 body or image filename, path and dimensions. Native dispatch does not type into a window,
 change focus or require a powered-on monitor. Its small pinned helper remains
 loaded until client exit to avoid a callback/unload race.
 
-`send-text` accepts any exact conversation ID or a unique complete name;
+`send-text` and `send-image` accept any exact conversation ID or a unique complete name;
 authorization must be checked by the calling agent. `FILEASSIST` is the native
 file-helper conversation, distinct from the internal chat with yourself.
 There is no recipient authorization allowlist in this CLI. Text must contain
 1–3072 UTF-8 bytes, preserve whitespace and contain no NUL. Request IDs use
 4–80 ASCII letters/digits/`._-`, starting with a letter or digit.
 
+`send-image` takes a regular PNG/JPEG file of 1 byte to 10 MiB, with dimensions
+up to 32768 per side and 64 million pixels total. The extension must match the
+format. Chinese filenames are preserved; invalid Windows filenames and source
+symlinks are rejected. An immutable owner-only copy in private `send-assets/`
+keeps the upload path available after the original file changes or the CLI exits.
+These copies are retained, including after uncertain outcomes. Request IDs bind
+the filename, content hash, format and dimensions. The native image objects copy
+the strings and retain their own asynchronous references; temporary references
+are released after dispatch. If asynchronous ownership cannot be established,
+the two small native handles remain until client exit and the result reports this.
+
 An owner-only journal is flushed to disk before native submission. Replaying
 the same request ID and payload queries the existing result; changed payloads
 are rejected. A timeout or interrupted submission remains unknown. Query its
 original ID; do not use a new ID or GUI action to retry an uncertain send.
 `send-status` only reconciles the returned local message ID against the exact
-account, sender, conversation and body. A nonzero server ID proves the local
+account, sender, conversation and body; images additionally require the stored
+type14 filename, MD5, original size and dimensions to match. A nonzero server ID proves the local
 server acknowledgement, while independent recipient delivery and UI checks
 remain separate. Journals contain message text in private state; do not copy
 them into public bug reports.
@@ -155,8 +171,16 @@ Five-second client-group samples used roughly 4.4–5.6 GiB PSS; observed CPU
 ranged from 9–18% of one core while idle and about 20% in one send window.
 These are short samples, not continuous resource bounds.
 
-Development acceptance still requires native media sends and remote/missing
-original downloads beyond the verified PNG cache export,
+2026-10-02 installed ordinary CLI acceptance verified a native PNG and a JPEG
+with a Chinese filename, each independently read once in the authorized personal
+WeChat recipient with a nonzero server ID. Both client windows displayed the
+images; verified original exports matched input bytes. Same-ID PNG replay added
+no messages and a changed image was rejected. Construct-only image and text
+preflights added no messages. This does not verify arbitrary group sends or
+other image/attachment formats.
+
+Development acceptance still requires native file/sticker/card sends and remote/missing
+original downloads beyond the verified PNG and native type14 JPEG cache export,
 school workbench integration, offline-gap coverage and longer stability/resource
 measurements. Residency remains an owner decision; no autostart is added. GUI results and generated test data do not prove native
 CLI message support. No application autostart or background receiver is

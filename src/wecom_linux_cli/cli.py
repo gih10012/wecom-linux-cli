@@ -14,6 +14,7 @@ from .keys import capture
 from .resources import measure
 from .messages import configure, conversations, messages
 from .sending import preflight, send_text, send_status
+from .sending_images import preflight as image_preflight, send_image
 from .media import export as export_media
 
 
@@ -51,9 +52,16 @@ def main() -> int:
             send.add_argument("--request-id", required=True)
     send_query = sub.add_parser("send-status", help="Read/reconcile an existing request; never sends")
     send_query.add_argument("--request-id", required=True)
+    for command in ("send-image", "send-image-preflight"):
+        send = sub.add_parser(command, help="Native PNG/JPEG image; caller checks recipient authorization")
+        send.add_argument("--account", default="me")
+        send.add_argument("--chat", required=True)
+        send.add_argument("--image", type=Path, required=True)
+        if command == "send-image":
+            send.add_argument("--request-id", required=True)
     media = sub.add_parser("media", help="Export hash-verified full media from the client cache")
     media_sub = media.add_subparsers(dest="media_command", required=True)
-    media_export = media_sub.add_parser("export", help="Currently external WeChat PNG/JPEG images only")
+    media_export = media_sub.add_parser("export", help="Export cached original PNG/JPEG images")
     media_export.add_argument("--account", default="me")
     media_export.add_argument("--chat", required=True)
     media_export.add_argument("--message-id", type=int, required=True)
@@ -85,6 +93,10 @@ def main() -> int:
             result = preflight(args.account, args.chat, args.text)
         elif args.command == "send-text":
             result = send_text(args.account, args.chat, args.text, args.request_id)
+        elif args.command == "send-image-preflight":
+            result = image_preflight(args.account, args.chat, args.image)
+        elif args.command == "send-image":
+            result = send_image(args.account, args.chat, args.image, args.request_id)
         elif args.command == "send-status":
             result = send_status(args.request_id)
         elif args.command == "media":

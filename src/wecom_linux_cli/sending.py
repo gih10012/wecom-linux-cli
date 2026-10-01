@@ -13,6 +13,7 @@ import re
 import secrets
 import shutil
 import subprocess
+import struct
 import tempfile
 import time
 from contextlib import contextmanager
@@ -70,7 +71,7 @@ def _lock():
 def artifacts() -> dict:
     source = Path(__file__).parent / "_native"
     files = ("message_hook.h", "message_hook.c", "message_dispatch.c", "message_resolve.c")
-    digest = hashlib.sha256(b"native-text-v1-send-enabled\0" +
+    digest = hashlib.sha256(b"native-message-v2-send-enabled\0" +
                             b"".join((source / name).read_bytes() for name in files)).hexdigest()
     folder = _folder(private_root() / "native" / digest)
     result = {}
@@ -184,6 +185,8 @@ def _dispatch(prepared: dict, mode: int) -> tuple[dict, bytes]:
         with os.fdopen(input_descriptor, "wb") as stream:
             stream.write(prepared["chat"].encode("ascii").ljust(256, b"\0"))
             stream.write(prepared["text"].encode("utf-8").ljust(4096, b"\0"))
+            stream.write(struct.pack("<III", prepared.get("input_kind", 2), prepared.get("width", 0), prepared.get("height", 0)))
+            stream.write(prepared.get("filename", "").encode("utf-8").ljust(1024, b"\0"))
             stream.flush()
             os.fsync(stream.fileno())
         if client.processes(prepared["prefix"], prepared["executable"]) != prepared["before"]:
@@ -235,8 +238,14 @@ def _reconcile(record: dict) -> dict:
                                   "FROM message_table WHERE message_id=?", (local_id,)).fetchall()
     if len(rows) == 1:
         server, sender, chat, content_type, content = rows[0]
+        if record.get("media_kind") == "image":
+            from .sending_images import image_matches
+            raw = bytes(content) if isinstance(content, (bytes, bytearray, memoryview)) else b""
+            body_matches = image_matches(content_type, raw, record)
+        else:
+            body_matches = decode(content_type, content).get("text") == record["text"]
         matched = (str(sender) == value["self_id"] and chat == record["chat_id"] and
-                   decode(content_type, content).get("text") == record["text"])
+                   body_matches)
         record["local_history_integrated"] = matched
         if matched and str(server) not in ("0", "None", ""):
             record.update(status="sent_local_server_id_verified", ok=True,

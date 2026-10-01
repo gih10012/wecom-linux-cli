@@ -6,7 +6,7 @@
 #include <stdlib.h>
 #define MAGIC 0x57434c31
 #define TEXT_MAX 4096
-#define MESSAGE_NAME L"WecomLinuxCliText.v1"
+#define MESSAGE_NAME L"WecomLinuxCliMessage.v2"
 typedef struct {
  DWORD magic,pid,tid,nonce,mode,manager;
  ULONGLONG creation,expected_self_id;
@@ -17,5 +17,7 @@ typedef struct {
  wchar_t executable[512];
  char chat[256],text[TEXT_MAX];
  char serialized[TEXT_MAX];
+ DWORD input_kind,width,height,handles_retained,info_references,rich_references;
+ char filename[1024];
 } Trial;
-static inline void map_name(wchar_t *out,DWORD nonce) {swprintf(out,80,L"Local\\WecomCliText_%08lx",nonce);}
+static inline void map_name(wchar_t *out,DWORD nonce) {swprintf(out,80,L"Local\\WecomCliMessage_%08lx",nonce);}
