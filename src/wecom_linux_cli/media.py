@@ -8,8 +8,9 @@ import hashlib
 import os
 import re
 import tempfile
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
+from . import client
 from .content import fields
 from .database import open_snapshot
 from .messages import account, names
@@ -40,6 +41,31 @@ def _read_original(path: Path, expected_size: int, md5: str) -> bytes:
     return data
 
 
+def _cache_path(cache: Path, filename: str) -> Path:
+    windows = PureWindowsPath(filename)
+    if ".." in windows.parts:
+        raise ValueError("CACHE_PATH_OUTSIDE_ACCOUNT")
+    if windows.drive or windows.root:
+        # Native outgoing images use absolute C: cache paths. Accept only
+        # the configured drive and this account's Image cache, never arbitrary
+        # Windows paths or the caller's host filesystem.
+        current = client.config()
+        if windows.drive.lower() != "c:" or windows.root != "\\" or not current.get("prefix"):
+            raise ValueError("CACHE_PATH_OUTSIDE_ACCOUNT")
+        drive = (Path(current["prefix"]) / "drive_c").resolve()
+        if not cache.resolve().is_relative_to(drive):
+            raise ValueError("CACHE_PATH_OUTSIDE_ACCOUNT")
+        path = drive.joinpath(*windows.parts[1:])
+    else:
+        path = cache.joinpath(*windows.parts)
+    components = windows.parts[1:] if windows.drive else windows.parts
+    if any(":" in part for part in components):
+        raise ValueError("CACHE_PATH_OUTSIDE_ACCOUNT")
+    if path.is_symlink() or not path.resolve().is_relative_to(cache.resolve()):
+        raise ValueError("CACHE_PATH_OUTSIDE_ACCOUNT")
+    return path
+
+
 def export(name: str, chat: str, message_id: int) -> dict:
     if message_id < 1:
         raise ValueError("INVALID_MESSAGE_ID")
@@ -57,10 +83,11 @@ def export(name: str, chat: str, message_id: int) -> dict:
                            "WHERE message_id=? AND conversation_id=?", (message_id, chat)).fetchone()
     if row is None:
         raise ValueError("MESSAGE_NOT_FOUND_IN_EXACT_CHAT")
-    if row[0] != 101:
+    if row[0] not in (14, 101):
         raise ValueError("MEDIA_TYPE_NOT_SUPPORTED_FOR_EXPORT")
     parsed = fields(bytes(row[1]))
-    key = _single(parsed, 3, 2)  # External WeChat image's original cache key.
+    # Native image14 uses field1; incoming external WeChat image101 uses field3.
+    key = _single(parsed, 1 if row[0] == 14 else 3, 2)
     expected_size = _single(parsed, 4, 0)
     md5 = _single(parsed, 10, 2).decode("ascii")
     if not 1 <= expected_size <= MAX_IMAGE_BYTES or not re.fullmatch(r"[0-9a-f]{32}", md5):
@@ -91,12 +118,7 @@ def export(name: str, chat: str, message_id: int) -> dict:
                                             (key, text_key)):
                 if not isinstance(filename, str) or not filename or len(filename) > 1024:
                     raise ValueError("UNSUPPORTED_CACHE_FILENAME")
-                relative = Path(filename.replace("\\", "/"))
-                if relative.is_absolute() or ".." in relative.parts or ":" in filename:
-                    raise ValueError("CACHE_PATH_OUTSIDE_ACCOUNT")
-                path = cache / relative
-                if path.is_symlink() or not path.resolve().is_relative_to(cache.resolve()):
-                    raise ValueError("CACHE_PATH_OUTSIDE_ACCOUNT")
+                path = _cache_path(cache, filename)
                 if path.is_file():
                     candidates.add(path)
     if not candidates:

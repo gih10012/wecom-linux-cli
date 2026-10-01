@@ -87,6 +87,32 @@ class CachedOriginalTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "ORIGINAL_IMAGE_NOT_CACHED"):
             export("me", "S:123_777", 1)
 
+    def test_native_image_uses_original_key_and_absolute_account_cache(self):
+        md5 = hashlib.md5(self.original).hexdigest()
+        raw = (length_field(1, b"original-key") + length_field(2, b"photo.png") +
+               b"\x20" + varint(len(self.original)) + length_field(10, md5.encode()) +
+               length_field(26, b"thumbnail-key"))
+        with closing(sqlite3.connect(self.data / "message.db")) as c, c:
+            c.execute("UPDATE message_table SET content_type=14,content=?", (raw,))
+        with closing(sqlite3.connect(self.mapping)) as c, c:
+            c.execute("UPDATE mapping SET file_name=? WHERE key='original-key'",
+                      (r"C:\Users\test\Documents\WXWork\123\Cache\Image\2026-10\original.png",))
+        result = export("me", "S:123_777", 1)
+        self.assertEqual(Path(result["path"]).read_bytes(), self.original)
+        self.assertFalse(result["thumbnail_used"])
+
+    def test_absolute_windows_mapping_cannot_escape_configured_account(self):
+        for path in (r"D:\Users\test\Documents\WXWork\123\Cache\Image\original.png",
+                     r"C:\Users\test\Documents\WXWork\999\Cache\Image\original.png",
+                     r"C:\Users\test\Documents\WXWork\123\Cache\Image\..\original.png",
+                     r"\\server\share\original.png", r"C:original.png",
+                     r"C:\Users\test\Documents\WXWork\123\Cache\Image\original.png:stream"):
+            with self.subTest(path=path):
+                with closing(sqlite3.connect(self.mapping)) as c, c:
+                    c.execute("UPDATE mapping SET file_name=? WHERE key='original-key'", (path,))
+                with self.assertRaisesRegex(ValueError, "OUTSIDE_ACCOUNT"):
+                    export("me", "S:123_777", 1)
+
     def test_same_size_corruption_fails_hash_check(self):
         data = bytearray(self.original)
         data[-1] ^= 1

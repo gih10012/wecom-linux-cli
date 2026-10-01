@@ -86,17 +86,21 @@ content as base64, rather than claiming a guessed text body. Sender and server
 IDs are strings to preserve their integer precision. Media references are
 returned; references alone do not prove downloaded or viewed media.
 
-`media export` currently supports external WeChat image type101. It resolves
+`media export` supports native image type14 and external WeChat image type101. It resolves
 the original reference through the account's plaintext CacheMapping database,
 including committed WAL changes, and requires the message's original size and
 MD5 to match the cached bytes. It copies verified PNG/JPEG bytes into private
 `attachments/` with mode0600 and returns the path/SHA-256. It neither fetches
 remote media nor substitutes thumbnails. If the original is absent, open that
 image normally in the client and then export again. Other types and missing
-remote originals remain unsupported. The exact chat/message scope and cache
+remote originals remain unsupported. Absolute C: mappings are accepted only
+inside the configured Wine prefix and this account's Image cache. The exact chat/message scope and cache
 path containment are checked before reading. Real 2026-10-01 acceptance used
 a personal WeChat CLI PNG received in the corresponding authorized WeCom
 chat: both UIs displayed it and the exported original matched input bytes.
+An image sent through the normal WeCom GUI produced type14 and reached the
+authorized personal WeChat peer once; its full cached PNG export also matched
+the original bytes. That GUI observation does not verify native CLI image sending.
 JPEG exports and other attachment formats still need separate real acceptance.
 
 2026-10-01 local acceptance verified real private/group history, default
