@@ -17,4 +17,4 @@ wecom-linux = "wecom_linux_cli.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-"wecom_linux_cli._native" = ["*.c"]
+"wecom_linux_cli._native" = ["*.c", "*.h"]

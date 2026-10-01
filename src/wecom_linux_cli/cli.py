@@ -13,6 +13,7 @@ from .database import inspect
 from .keys import capture
 from .resources import measure
 from .messages import configure, conversations, messages
+from .sending import preflight, send_text, send_status
 
 
 def main() -> int:
@@ -40,6 +41,15 @@ def main() -> int:
     add.add_argument("--account", default="me")
     add.add_argument("--data-dir", type=Path, required=True)
     add.add_argument("--key-file", type=Path, required=True)
+    for command in ("send-text", "send-preflight"):
+        send = sub.add_parser(command, help="Native owner identity text; caller checks recipient authorization")
+        send.add_argument("--account", default="me")
+        send.add_argument("--chat", required=True)
+        send.add_argument("--text", required=True)
+        if command == "send-text":
+            send.add_argument("--request-id", required=True)
+    send_query = sub.add_parser("send-status", help="Read/reconcile an existing request; never sends")
+    send_query.add_argument("--request-id", required=True)
     for command in ("conversations", "messages"):
         read = sub.add_parser(command, help="Read locally synced owner history")
         read.add_argument("--account", default="me")
@@ -64,6 +74,12 @@ def main() -> int:
             result = conversations(args.account, args.query, args.limit, args.cursor, args.all_history)
         elif args.command == "messages":
             result = messages(args.account, args.chat, args.limit, args.cursor, args.all_history)
+        elif args.command == "send-preflight":
+            result = preflight(args.account, args.chat, args.text)
+        elif args.command == "send-text":
+            result = send_text(args.account, args.chat, args.text, args.request_id)
+        elif args.command == "send-status":
+            result = send_status(args.request_id)
         else:
             result = inspect(args.database, args.key_file)
     except (OSError, ValueError, sqlite3.DatabaseError, subprocess.TimeoutExpired) as exc:

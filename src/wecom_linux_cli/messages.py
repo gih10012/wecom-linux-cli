@@ -74,7 +74,9 @@ def names(value: dict) -> tuple[dict, dict, dict]:
             if others:
                 chats[cid] = users.get(others[0], "")
             elif participants and all(uid == value["self_id"] for uid in participants):
-                chats[cid] = "文件传输助手"
+                chats[cid] = users.get(value["self_id"], "")
+    # The internal self conversation and the native file helper are distinct.
+    chats["FILEASSIST"] = "文件传输助手"
     return users, chats, evidence
 
 

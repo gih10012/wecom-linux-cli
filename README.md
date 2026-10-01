@@ -2,8 +2,8 @@
 
 Local tools for the account owner's WeCom client on Linux. Reads locally
 synced conversations and messages from an isolated official Windows client
-under Wine, including committed WAL changes. Personal sending is still in
-development. This project is
+under Wine, including committed WAL changes, and sends native personal text
+through the running client. This project is
 independent of Tencent's official `wecom-cli`, whose bot channel has a
 different identity and scope.
 
@@ -21,6 +21,9 @@ wecom-linux conversations --query '会话名称' --limit 20
 wecom-linux messages --chat 'EXACT_CHAT_ID' --limit 20
 wecom-linux messages --chat 'EXACT_CHAT_ID' --cursor 'RETURNED_CURSOR'
 wecom-linux messages --chat 'EXACT_CHAT_ID' --all
+wecom-linux send-preflight --chat 'EXACT_CHAT_ID' --text '文字'
+wecom-linux send-text --chat 'EXACT_CHAT_ID' --text '文字' --request-id 'unique-request-01'
+wecom-linux send-status --request-id 'unique-request-01'
 ```
 
 `status` inspects the configured Wine client without starting it. Local
@@ -85,11 +88,47 @@ returned; media downloads and viewing are not implied.
 2026-10-01 local acceptance verified real private/group history, default
 pagination, all synced rows in a selected conversation, and an independently
 read new GUI-generated text message with Chinese, newline and emoji. This
-proves CLI reads, not CLI sends or complete cloud history.
+proves CLI reads, not complete cloud history.
 
-Development acceptance still requires native text and
-media sends with deduplication, school workbench integration, and resource and
-restart measurements. GUI results and generated test data do not prove native
+Native text sending supports only the SHA-256-pinned official Windows
+5.0.11.6018 executable under the configured isolated Wine prefix. It requires
+32-bit MinGW on the first use, one untraced client, a unique native manager and
+the configured account's current user ID. A same-thread Windows message hook
+constructs native message objects with the client's allocator and releases
+its references with the client's destructors. Each send first performs a
+construct-only preflight using the same artifact and verifies the exact
+serialized Chinese/UTF-8 body. Native dispatch does not type into a window,
+change focus or require a powered-on monitor. Its small pinned helper remains
+loaded until client exit to avoid a callback/unload race.
+
+`send-text` accepts any exact conversation ID or a unique complete name;
+authorization must be checked by the calling agent. `FILEASSIST` is the native
+file-helper conversation, distinct from the internal chat with yourself.
+There is no recipient authorization allowlist in this CLI. Text must contain
+1–3072 UTF-8 bytes, preserve whitespace and contain no NUL. Request IDs use
+4–80 ASCII letters/digits/`._-`, starting with a letter or digit.
+
+An owner-only journal is flushed to disk before native submission. Replaying
+the same request ID and payload queries the existing result; changed payloads
+are rejected. A timeout or interrupted submission remains unknown. Query its
+original ID; do not use a new ID or GUI action to retry an uncertain send.
+`send-status` only reconciles the returned local message ID against the exact
+account, sender, conversation and body. A nonzero server ID proves the local
+server acknowledgement, while independent recipient delivery and UI checks
+remain separate. Journals contain message text in private state; do not copy
+them into public bug reports.
+
+2026-10-01 installed ordinary CLI acceptance verified text from personal
+WeChat into the owner's authorized WeCom external chat, then native WeCom
+CLI text back into that corresponding WeChat chat. Independent readers on
+both sides found each full Chinese/newline/emoji body exactly once with
+nonzero server IDs; both client windows displayed them. Same-ID replay did
+not duplicate the message and a changed body was rejected. A preceding native
+file-helper candidate also had the owner's phone confirmation. This does not
+verify arbitrary groups, every media format or restart stability.
+
+Development acceptance still requires native media sends and downloads,
+school workbench integration, and resource and restart measurements. GUI results and generated test data do not prove native
 CLI message support. No application autostart or background receiver is
 installed by this project.
 

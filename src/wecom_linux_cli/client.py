@@ -73,7 +73,8 @@ def status() -> dict:
         "processes": processes(prefix, executable) if prefix and executable and prefix.is_dir() else [],
         "message_read_available": (private_root() / "accounts/me.json").is_file(),
         "message_read_verification": "run conversations or messages for a validated snapshot",
-        "message_send_verified": False,
+        "message_send_available": True,
+        "message_send_verification": "send-status reports each request; preflight checks the running client",
         "autostart_policy": "not_installed_by_this_cli",
     }
 

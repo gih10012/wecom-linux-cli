@@ -74,7 +74,8 @@ class MessageReadTests(unittest.TestCase):
 
     def test_filehelper_name_and_conversation_cursor(self):
         result = conversations(query="文件传输助手")
-        self.assertEqual(result["items"][0]["chat_id"], "S:123_123")
+        self.assertEqual(result["items"][0]["chat_id"], "FILEASSIST")
+        self.assertEqual(messages("me", "S:123_123")["chat_name"], "测试用户")
         first = conversations(limit=1)
         second = conversations(limit=1, cursor=first["next_cursor"])
         self.assertNotEqual(first["items"][0]["chat_id"], second["items"][0]["chat_id"])
