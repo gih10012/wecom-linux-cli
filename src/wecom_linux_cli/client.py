@@ -22,9 +22,15 @@ def config() -> dict:
     return read_private(path) if path.is_file() else {}
 
 
-def processes(prefix: Path) -> list[dict]:
+def processes(prefix: Path, executable: Path | None = None) -> list[dict]:
     found = []
     expected = b"WINEPREFIX=" + os.fsencode(str(prefix.resolve()))
+    paths = None
+    if executable is not None:
+        executable = executable.resolve()
+        relative = executable.relative_to(prefix.resolve() / "drive_c")
+        paths = {os.fsencode(str(executable)).lower(),
+                 os.fsencode("C:\\" + str(relative).replace("/", "\\")).lower()}
     for path in Path("/proc").iterdir():
         if not path.name.isdecimal():
             continue
@@ -34,6 +40,8 @@ def processes(prefix: Path) -> list[dict]:
             cmd = (path / "cmdline").read_bytes().split(b"\0")
             env = (path / "environ").read_bytes().split(b"\0")
             if expected not in env or not cmd or b"wxwork.exe" not in cmd[0].lower():
+                continue
+            if paths is not None and cmd[0].lower() not in paths:
                 continue
             stat = (path / "stat").read_text().rsplit(")", 1)[1].split()
             found.append({"pid": int(path.name), "start_time": int(stat[19])})
@@ -58,7 +66,7 @@ def status() -> dict:
         "configured": bool(prefix and executable),
         "client_version": current.get("version"),
         "client_installed": bool(executable and executable.is_file()),
-        "processes": processes(prefix) if prefix and prefix.is_dir() else [],
+        "processes": processes(prefix, executable) if prefix and executable and prefix.is_dir() else [],
         "message_read_verified": False,
         "message_send_verified": False,
         "autostart_policy": "not_installed_by_this_cli",
@@ -75,33 +83,15 @@ def start() -> dict:
         raise ValueError("CLIENT_EXECUTABLE_OUTSIDE_PREFIX_OR_MISSING")
     if prefix.stat().st_uid != os.getuid() or prefix.stat().st_mode & 0o077:
         raise ValueError("UNSAFE_WINE_PREFIX")
-    active = processes(prefix)
+    active = processes(prefix, executable)
     if active:
         return {"ok": True, "status": "already_running", "processes": active, "login_verified": False}
     wine = shutil.which("wine")
     if not wine:
         raise ValueError("WINE_NOT_INSTALLED")
-    env = os.environ.copy()
-    runtime = f"/run/user/{os.getuid()}"
-    env.setdefault("XDG_RUNTIME_DIR", runtime)
-    env.setdefault("DBUS_SESSION_BUS_ADDRESS", f"unix:path={runtime}/bus")
-    # Remote shells often lack the current desktop's variables. Read only
-    # display variables from the owner's existing user manager environment.
-    result = subprocess.run(
-        ["systemctl", "--user", "show-environment"], env=env,
-        capture_output=True, text=True, timeout=5,
-    )
-    if result.returncode == 0:
-        for line in result.stdout.splitlines():
-            name, sep, value = line.partition("=")
-            if sep and name in DESKTOP_VARIABLES and not env.get(name):
-                env[name] = value
+    env = environment(current)
     if not env.get("DISPLAY") and not env.get("WAYLAND_DISPLAY"):
         raise ValueError("DESKTOP_SESSION_UNAVAILABLE")
-    for name, value in current.get("environment", {}).items():
-        if name in CLIENT_VARIABLES and isinstance(value, str):
-            env[name] = value
-    env["WINEPREFIX"] = str(prefix)
     args = [wine]
     desktop = current.get("desktop")
     if desktop:
@@ -119,3 +109,27 @@ def start() -> dict:
         os.close(fd)
     return {"ok": True, "status": "launch_requested", "launcher_pid": child.pid,
             "login_verified": False, "message_send_performed": False}
+
+
+def environment(current: dict) -> dict:
+    """Recover display variables for the owner's already existing session."""
+    env = os.environ.copy()
+    runtime = f"/run/user/{os.getuid()}"
+    env.setdefault("XDG_RUNTIME_DIR", runtime)
+    env.setdefault("DBUS_SESSION_BUS_ADDRESS", f"unix:path={runtime}/bus")
+    # Remote shells often lack the current desktop's variables. Read only
+    # display variables from the owner's existing user manager environment.
+    result = subprocess.run(
+        ["systemctl", "--user", "show-environment"], env=env,
+        capture_output=True, text=True, timeout=5,
+    )
+    if result.returncode == 0:
+        for line in result.stdout.splitlines():
+            name, sep, value = line.partition("=")
+            if sep and name in DESKTOP_VARIABLES and not env.get(name):
+                env[name] = value
+    for name, value in current.get("environment", {}).items():
+        if name in CLIENT_VARIABLES and isinstance(value, str):
+            env[name] = value
+    env["WINEPREFIX"] = str(Path(current["prefix"]).resolve())
+    return env

@@ -10,6 +10,7 @@ from pathlib import Path
 from . import __version__
 from .client import status, start
 from .database import inspect
+from .keys import capture
 
 
 def main() -> int:
@@ -20,6 +21,10 @@ def main() -> int:
     client = sub.add_parser("client", help="Manage the explicitly configured isolated client")
     clientsub = client.add_subparsers(dest="client_command", required=True)
     clientsub.add_parser("start", help="Start client in existing desktop session; no autostart")
+    keys = sub.add_parser("keys", help="Read-only capture and verification of a local cipher key")
+    keysub = keys.add_subparsers(dest="key_command", required=True)
+    keycapture = keysub.add_parser("capture")
+    keycapture.add_argument("--database", type=Path, required=True)
     db = sub.add_parser("db", help="Inspect a validated copied local database")
     dbsub = db.add_subparsers(dest="db_command", required=True)
     check = dbsub.add_parser("inspect")
@@ -31,6 +36,8 @@ def main() -> int:
             result = status()
         elif args.command == "client":
             result = start()
+        elif args.command == "keys":
+            result = capture(args.database)
         else:
             result = inspect(args.database, args.key_file)
     except (OSError, ValueError, sqlite3.DatabaseError, subprocess.TimeoutExpired) as exc:

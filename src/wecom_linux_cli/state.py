@@ -36,4 +36,3 @@ def read_private(path: Path) -> dict:
         if s.st_uid != os.getuid() or s.st_mode & 0o077:
             raise ValueError("UNSAFE_PRIVATE_FILE_PERMISSIONS")
         return json.load(stream)
-

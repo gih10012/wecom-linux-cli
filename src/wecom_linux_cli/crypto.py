@@ -78,4 +78,3 @@ def decrypt_bytes(key: bytes, data: bytes) -> bytes:
         decrypt_page(key, data[i:i + size], i // size + 1)
         for i in range(0, len(data), size)
     )
-

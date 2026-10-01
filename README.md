@@ -11,6 +11,7 @@ Implemented commands:
 python -m pip install .
 wecom-linux status
 wecom-linux client start
+wecom-linux keys capture --database /private/prefix/drive_c/path/to/database.db
 wecom-linux db inspect --database /path/to/database.db --key-file /private/key.json
 ```
 
@@ -26,6 +27,14 @@ entry. Optional `desktop` (for example `WeCom,1280x960`) selects a Wine virtual
 desktop; `environment` may contain Wine DLL and rendering overrides. A launch
 request does not prove successful startup or login. This command requires a
 previously installed client and a private Wine prefix.
+
+`keys capture` requires the account owner's running client in that configured
+prefix and a 32-bit MinGW compiler. It reads bounded private writable memory
+through Wine's Windows process APIs, checks candidates against the selected
+encrypted database, and requires full SQLite integrity before saving an
+owner-only key file. Temporary candidates are deleted on completion or error;
+the key is never printed. The scan does not call client message functions.
+Finding a valid local cipher key would not prove remote login or message access.
 
 `db inspect` takes two matching copies of a local database, validates the
 wxSQLite3 AES-128 cipher key when needed, opens a temporary readonly snapshot,
