@@ -41,6 +41,10 @@ def processes(prefix: Path, executable: Path | None = None) -> list[dict]:
             env = (path / "environ").read_bytes().split(b"\0")
             if expected not in env or not cmd or b"wxwork.exe" not in cmd[0].lower():
                 continue
+            # The logged-in client starts broker and rendering processes with
+            # the same executable. They are not separate interactive clients.
+            if b"--broker" in cmd or b"--from-broker" in cmd:
+                continue
             if paths is not None and cmd[0].lower() not in paths:
                 continue
             stat = (path / "stat").read_text().rsplit(")", 1)[1].split()
@@ -67,7 +71,8 @@ def status() -> dict:
         "client_version": current.get("version"),
         "client_installed": bool(executable and executable.is_file()),
         "processes": processes(prefix, executable) if prefix and executable and prefix.is_dir() else [],
-        "message_read_verified": False,
+        "message_read_available": (private_root() / "accounts/me.json").is_file(),
+        "message_read_verification": "run conversations or messages for a validated snapshot",
         "message_send_verified": False,
         "autostart_policy": "not_installed_by_this_cli",
     }

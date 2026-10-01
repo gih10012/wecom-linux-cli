@@ -65,9 +65,9 @@ class SnapshotTests(unittest.TestCase):
             with self.assertRaises(sqlite3.OperationalError):
                 db.execute("UPDATE sample SET body='mutated'")
 
-    def test_live_wal_requires_implemented_validated_reader(self):
+    def test_invalid_wal_is_not_silently_ignored(self):
         Path(str(self.source) + "-wal").write_bytes(b"not-yet-supported")
-        with self.assertRaisesRegex(ValueError, "LIVE_WAL_NOT_YET_SUPPORTED"):
+        with self.assertRaisesRegex(ValueError, "INCOMPLETE_WAL_HEADER"):
             stable_bytes(self.source)
 
     def test_bad_key_file_permissions_rejected(self):

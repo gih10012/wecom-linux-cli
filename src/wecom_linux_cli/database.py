@@ -10,6 +10,7 @@ from pathlib import Path
 
 from .crypto import SQLITE_HEADER, decrypt_bytes
 from .state import private_root, read_private
+from .wal import apply_wal
 
 
 def _stamp(path: Path):
@@ -21,34 +22,42 @@ def _stamp(path: Path):
 
 
 def stable_bytes(source: Path, attempts: int = 3) -> tuple[bytes, dict]:
-    """Reject live WAL until its encryption/checksum format is validated.
+    """Copy the DB and WAL twice under unchanged metadata, then merge commits.
 
-    Two equal complete reads and unchanged file metadata guard against a
-    checkpoint during copying. This is a single-file stable snapshot, not
-    an atomic snapshot across different account databases.
+    No source file is opened for writing or checkpointed. This is a stable
+    pair, not a locked SQLite snapshot or a cross-database atomic snapshot.
     """
     wal = Path(str(source) + "-wal")
+    journal = Path(str(source) + "-journal")
     for _ in range(attempts):
-        before = _stamp(source), _stamp(wal)
+        before = _stamp(source), _stamp(wal), _stamp(journal)
         if before[0] is None:
             raise ValueError("DATABASE_NOT_FOUND")
-        if before[1] and before[1][2]:
-            raise ValueError("LIVE_WAL_NOT_YET_SUPPORTED")
-        if before[0][2] > 1024 * 1024 * 1024:
+        if before[2] and before[2][2]:
+            raise ValueError("ROLLBACK_JOURNAL_NOT_YET_SUPPORTED")
+        if any(stamp and stamp[2] > 1024 * 1024 * 1024 for stamp in before[:2]):
             raise ValueError("DATABASE_TOO_LARGE")
-        with source.open("rb") as stream:
-            data = stream.read()
-        with source.open("rb") as stream:
-            second = stream.read()
-        after = _stamp(source), _stamp(wal)
-        if before == after and data == second:
-            return data, {
+        try:
+            data = source.read_bytes()
+            wal_data = wal.read_bytes() if before[1] else b""
+            second = source.read_bytes()
+            wal_second = wal.read_bytes() if before[1] else b""
+        except FileNotFoundError:
+            continue
+        after = _stamp(source), _stamp(wal), _stamp(journal)
+        if before == after and data == second and wal_data == wal_second:
+            evidence = {
                 "source_sha256": hashlib.sha256(data).hexdigest(),
                 "source_bytes": len(data),
                 "snapshot_stable": True,
                 "snapshot_atomic": False,
-                "wal_present": False,
+                "wal_present": bool(wal_data),
             }
+            if wal_data:
+                data, wal_evidence = apply_wal(data, wal_data)
+                evidence.update(wal_evidence, wal_sha256=hashlib.sha256(wal_data).hexdigest(),
+                                wal_bytes=len(wal_data), snapshot_bytes=len(data))
+            return data, evidence
     raise ValueError("DATABASE_CHANGED_DURING_SNAPSHOT")
 
 

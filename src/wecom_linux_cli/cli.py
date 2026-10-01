@@ -11,6 +11,8 @@ from . import __version__
 from .client import status, start
 from .database import inspect
 from .keys import capture
+from .resources import measure
+from .messages import configure, conversations, messages
 
 
 def main() -> int:
@@ -21,6 +23,8 @@ def main() -> int:
     client = sub.add_parser("client", help="Manage the explicitly configured isolated client")
     clientsub = client.add_subparsers(dest="client_command", required=True)
     clientsub.add_parser("start", help="Start client in existing desktop session; no autostart")
+    resources = clientsub.add_parser("resources", help="Measure existing Wine processes; never starts client")
+    resources.add_argument("--seconds", type=float, default=5)
     keys = sub.add_parser("keys", help="Read-only capture and verification of a local cipher key")
     keysub = keys.add_subparsers(dest="key_command", required=True)
     keycapture = keysub.add_parser("capture")
@@ -30,14 +34,36 @@ def main() -> int:
     check = dbsub.add_parser("inspect")
     check.add_argument("--database", type=Path, required=True)
     check.add_argument("--key-file", type=Path, help="Owner-only JSON file containing raw_key_hex")
+    accounts = sub.add_parser("account", help="Configure exact verified owner database paths")
+    accountsub = accounts.add_subparsers(dest="account_command", required=True)
+    add = accountsub.add_parser("configure")
+    add.add_argument("--account", default="me")
+    add.add_argument("--data-dir", type=Path, required=True)
+    add.add_argument("--key-file", type=Path, required=True)
+    for command in ("conversations", "messages"):
+        read = sub.add_parser(command, help="Read locally synced owner history")
+        read.add_argument("--account", default="me")
+        read.add_argument("--limit", type=int, default=20)
+        read.add_argument("--cursor")
+        read.add_argument("--all", action="store_true", dest="all_history")
+        if command == "messages":
+            read.add_argument("--chat", required=True)
+        else:
+            read.add_argument("--query", default="")
     args = parser.parse_args()
     try:
         if args.command == "status":
             result = status()
         elif args.command == "client":
-            result = start()
+            result = start() if args.client_command == "start" else measure(args.seconds)
         elif args.command == "keys":
             result = capture(args.database)
+        elif args.command == "account":
+            result = configure(args.account, args.data_dir, args.key_file)
+        elif args.command == "conversations":
+            result = conversations(args.account, args.query, args.limit, args.cursor, args.all_history)
+        elif args.command == "messages":
+            result = messages(args.account, args.chat, args.limit, args.cursor, args.all_history)
         else:
             result = inspect(args.database, args.key_file)
     except (OSError, ValueError, sqlite3.DatabaseError, subprocess.TimeoutExpired) as exc:

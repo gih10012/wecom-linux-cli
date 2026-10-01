@@ -15,11 +15,13 @@
  */
 static int collect_candidates(HANDLE process, const wchar_t *output,
                               ULONGLONG *scanned, DWORD *count, BOOL *complete) {
-    HANDLE file = CreateFileW(output, GENERIC_WRITE, 0, NULL, TRUNCATE_EXISTING,
-                              FILE_ATTRIBUTE_NORMAL, NULL);
+    BOOL streaming = !wcscmp(output, L"-");
+    HANDLE file = streaming ? GetStdHandle(STD_OUTPUT_HANDLE) :
+        CreateFileW(output, GENERIC_WRITE, 0, NULL, TRUNCATE_EXISTING,
+                    FILE_ATTRIBUTE_NORMAL, NULL);
     if (file == INVALID_HANDLE_VALUE) return 0;
     unsigned char *buffer = malloc(65536 + 32);
-    if (!buffer) { CloseHandle(file); return 0; }
+    if (!buffer) { if (!streaming) CloseHandle(file); return 0; }
     const ULONGLONG byte_limit = 512ULL * 1024 * 1024;
     ULONGLONG started = GetTickCount64();
     uintptr_t cursor = 0;
@@ -44,6 +46,14 @@ static int collect_candidates(HANDLE process, const wchar_t *output,
                 if (!ReadProcessMemory(process, (unsigned char *)region.BaseAddress + offset,
                                        buffer, length, &received)) continue;
                 *scanned += received;
+                if (streaming) {
+                    DWORD length32 = (DWORD)received, written = 0;
+                    if (!WriteFile(file, &length32, 4, &written, NULL) || written != 4 ||
+                        !WriteFile(file, buffer, length32, &written, NULL) || written != length32) {
+                        ok = 0; goto done;
+                    }
+                    continue;
+                }
                 for (SIZE_T i = 0; i + 20 <= received && i < 65536; i += 4) {
                     /* wxSQLite3 stores a little-endian key length immediately
                      * before the 16-byte derived cipher key. Confirm the
@@ -64,8 +74,10 @@ static int collect_candidates(HANDLE process, const wchar_t *output,
 done:
     SecureZeroMemory(buffer, 65536 + 32);
     free(buffer);
-    if (!FlushFileBuffers(file)) ok = 0;
-    CloseHandle(file);
+    if (!streaming) {
+        if (!FlushFileBuffers(file)) ok = 0;
+        CloseHandle(file);
+    }
     return ok;
 }
 
@@ -90,6 +102,21 @@ int wmain(int argc, wchar_t **argv) {
             CloseHandle(process);
             continue;
         }
+        if (argc == 2) {
+            /* Brokers/renderers use the same executable. A matching parent
+             * executable identifies those children without reading their
+             * command lines or choosing the first matching process.
+             */
+            HANDLE parent = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION,
+                                        FALSE, entry.th32ParentProcessID);
+            if (parent) {
+                length = 32768;
+                BOOL child = QueryFullProcessImageNameW(parent, 0, path, &length)
+                             && !_wcsicmp(path, argv[1]);
+                CloseHandle(parent);
+                if (child) { CloseHandle(process); continue; }
+            }
+        }
         FILETIME created = {0}, exited = {0}, kernel = {0}, user = {0};
         BOOL identity = GetProcessTimes(process, &created, &exited, &kernel, &user);
         ULONGLONG time = ((ULONGLONG)created.dwHighDateTime << 32) | created.dwLowDateTime;
@@ -109,7 +136,8 @@ int wmain(int argc, wchar_t **argv) {
             BOOL unchanged = GetProcessTimes(process, &after, &exited, &kernel, &user)
                 && CompareFileTime(&created, &after) == 0
                 && GetExitCodeProcess(process, &exit_code) && exit_code == STILL_ACTIVE;
-            printf("{\"ok\":%s,\"windows_pid\":%lu,\"identity_unchanged\":%s,"
+            fprintf(!wcscmp(argv[4], L"-") ? stderr : stdout,
+                   "{\"ok\":%s,\"windows_pid\":%lu,\"identity_unchanged\":%s,"
                    "\"scanned_bytes\":%llu,\"candidate_count\":%lu,\"scan_complete\":%s,"
                    "\"native_call_performed\":false}\n",
                    ok && unchanged ? "true" : "false", entry.th32ProcessID,
