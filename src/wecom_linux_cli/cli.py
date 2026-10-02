@@ -19,7 +19,7 @@ from .sending_files import preflight as file_preflight, send_file
 from .sending_stickers import preflight as sticker_preflight, send_sticker
 from .sending_cards import forward, message_xml, send_xml, xml_preflight
 from .media import export as export_media
-from . import web
+from . import web, audio
 
 
 def main() -> int:
@@ -27,6 +27,7 @@ def main() -> int:
     parser.add_argument("--version", action="version", version=__version__)
     sub = parser.add_subparsers(dest="command", required=True)
     web.add_parser(sub)
+    audio.add_parser(sub)
     sub.add_parser("status", help="Inspect configured client; does not start it")
     client = sub.add_parser("client", help="Manage the explicitly configured isolated client")
     clientsub = client.add_subparsers(dest="client_command", required=True)
@@ -98,7 +99,9 @@ def main() -> int:
             read.add_argument("--query", default="")
     args = parser.parse_args()
     try:
-        if args.command == "web":
+        if args.command == "audio":
+            result = audio.run(args)
+        elif args.command == "web":
             result = web.run(args)
         elif args.command == "status":
             result = status()
