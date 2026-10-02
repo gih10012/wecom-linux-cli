@@ -185,7 +185,7 @@ def _dispatch(prepared: dict, mode: int) -> tuple[dict, bytes]:
         with os.fdopen(input_descriptor, "wb") as stream:
             stream.write(prepared["chat"].encode("ascii").ljust(256, b"\0"))
             stream.write(prepared["text"].encode("utf-8").ljust(4096, b"\0"))
-            stream.write(struct.pack("<III", prepared.get("input_kind", 2), prepared.get("width", 0), prepared.get("height", 0)))
+            stream.write(struct.pack("<III", prepared.get("input_kind", 2), prepared.get("file_size", prepared.get("width", 0)), prepared.get("height", 0)))
             stream.write(prepared.get("filename", "").encode("utf-8").ljust(1024, b"\0"))
             stream.flush()
             os.fsync(stream.fileno())
@@ -242,6 +242,10 @@ def _reconcile(record: dict) -> dict:
             from .sending_images import image_matches
             raw = bytes(content) if isinstance(content, (bytes, bytearray, memoryview)) else b""
             body_matches = image_matches(content_type, raw, record)
+        elif record.get("media_kind") == "file":
+            from .sending_files import file_matches
+            raw = bytes(content) if isinstance(content, (bytes, bytearray, memoryview)) else b""
+            body_matches = file_matches(content_type, raw, record)
         else:
             body_matches = decode(content_type, content).get("text") == record["text"]
         matched = (str(sender) == value["self_id"] and chat == record["chat_id"] and

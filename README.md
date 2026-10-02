@@ -2,7 +2,8 @@
 
 Local tools for the account owner's WeCom client on Linux. Reads locally
 synced conversations and messages from an isolated official Windows client
-under Wine, including committed WAL changes, and sends native personal text and PNG/JPEG images
+under Wine, including committed WAL changes, and sends native personal text,
+PNG/JPEG images and ordinary files
 through the running client. This project is
 independent of Tencent's official `wecom-cli`, whose bot channel has a
 different identity and scope.
@@ -25,6 +26,8 @@ wecom-linux send-preflight --chat 'EXACT_CHAT_ID' --text '文字'
 wecom-linux send-text --chat 'EXACT_CHAT_ID' --text '文字' --request-id 'unique-request-01'
 wecom-linux send-image-preflight --chat 'EXACT_CHAT_ID' --image '/path/image.png'
 wecom-linux send-image --chat 'EXACT_CHAT_ID' --image '/path/图片.jpg' --request-id 'unique-image-01'
+wecom-linux send-file-preflight --chat 'EXACT_CHAT_ID' --file '/path/文件.zip'
+wecom-linux send-file --chat 'EXACT_CHAT_ID' --file '/path/文件.zip' --request-id 'unique-file-01'
 wecom-linux send-status --request-id 'unique-request-01'
 wecom-linux media export --chat 'EXACT_CHAT_ID' --message-id 123
 ```
@@ -112,18 +115,19 @@ pagination, all synced rows in a selected conversation, and an independently
 read new GUI-generated text message with Chinese, newline and emoji. This
 proves CLI reads, not complete cloud history.
 
-Native text and image sending supports only the SHA-256-pinned official Windows
+Native text, image and file sending supports only the SHA-256-pinned official Windows
 5.0.11.6018 executable under the configured isolated Wine prefix. It requires
 32-bit MinGW on the first use, one untraced client, a unique native manager and
 the configured account's current user ID. A same-thread Windows message hook
 constructs native message objects with the client's allocator and releases
 its references with the client's destructors. Each send first performs a
 construct-only preflight using the same artifact and verifies the exact
-serialized Chinese/UTF-8 body or image filename, path and dimensions. Native dispatch does not type into a window,
+serialized Chinese/UTF-8 body or attachment filename, path and dimensions/size.
+Native dispatch does not type into a window,
 change focus or require a powered-on monitor. Its small pinned helper remains
 loaded until client exit to avoid a callback/unload race.
 
-`send-text` and `send-image` accept any exact conversation ID or a unique complete name;
+`send-text`, `send-image` and `send-file` accept any exact conversation ID or a unique complete name;
 authorization must be checked by the calling agent. `FILEASSIST` is the native
 file-helper conversation, distinct from the internal chat with yourself.
 There is no recipient authorization allowlist in this CLI. Text must contain
@@ -141,13 +145,21 @@ the strings and retain their own asynchronous references; temporary references
 are released after dispatch. If asynchronous ownership cannot be established,
 the two small native handles remain until client exit and the result reports this.
 
+`send-file` accepts ordinary files of 1 byte to 10 MiB, with the same private
+snapshot, filename checks, native ownership and replay behavior. The filename
+and bytes are preserved. It sends an attachment; a GIF file sent this way does
+not prove native sticker support. Chinese-filename TXT and ZIP were independently
+received and downloaded byte-for-byte in the authorized personal WeChat peer.
+Other file formats require their own acceptance.
+
 An owner-only journal is flushed to disk before native submission. Replaying
 the same request ID and payload queries the existing result; changed payloads
 are rejected. A timeout or interrupted submission remains unknown. Query its
 original ID; do not use a new ID or GUI action to retry an uncertain send.
 `send-status` only reconciles the returned local message ID against the exact
 account, sender, conversation and body; images additionally require the stored
-type14 filename, MD5, original size and dimensions to match. A nonzero server ID proves the local
+type14 filename, MD5, original size and dimensions to match; ordinary files
+require type15, exact filename, size and MD5. A nonzero server ID proves the local
 server acknowledgement, while independent recipient delivery and UI checks
 remain separate. Journals contain message text in private state; do not copy
 them into public bug reports.
@@ -179,7 +191,16 @@ no messages and a changed image was rejected. Construct-only image and text
 preflights added no messages. This does not verify arbitrary group sends or
 other image/attachment formats.
 
-Development acceptance still requires native file/sticker/card sends and remote/missing
+Installed ordinary CLI Chinese-filename TXT and ZIP acceptance on 2026-10-02
+verified each file once in the authorized personal WeChat recipient with
+nonzero server IDs. The recipient's downloaded bytes matched each input, and
+both client windows rendered the filename and size. Temporary native references
+were released while the client's asynchronous references retained the file.
+Same-ID TXT replay added no messages, a changed file was rejected, and an image
+request from the previous installation replayed without resubmission. File,
+image and text construct-only preflights added no messages; 58 tests passed.
+
+Development acceptance still requires native sticker/card/custom XML support and remote/missing
 original downloads beyond the verified PNG and native type14 JPEG cache export,
 school workbench integration, offline-gap coverage and longer stability/resource
 measurements. Residency remains an owner decision; no autostart is added. GUI results and generated test data do not prove native

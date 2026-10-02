@@ -52,29 +52,36 @@ def dimensions(data: bytes) -> tuple[str, int, int]:
     return kind, width, height
 
 
-def snapshot(source: Path) -> tuple[bytes, dict]:
+def snapshot_bytes(source: Path, label: str = "IMAGE") -> tuple[bytes, dict]:
     source = source.expanduser()
     filename = source.name
     if (not filename or len(filename.encode("utf-8")) > 768 or filename[-1] in ". " or
             any(ord(c) < 32 or c in '<>:"/\\|?*' for c in filename) or
             filename.split(".")[0].upper() in {"CON", "PRN", "AUX", "NUL", *[f"COM{i}" for i in range(1, 10)], *[f"LPT{i}" for i in range(1, 10)]}):
-        raise ValueError("INVALID_WINDOWS_IMAGE_FILENAME")
+        raise ValueError(f"INVALID_WINDOWS_{label}_FILENAME")
     fd = os.open(source, os.O_RDONLY | os.O_NOFOLLOW)
     with os.fdopen(fd, "rb") as stream:
         before = os.fstat(stream.fileno())
         if not stat.S_ISREG(before.st_mode) or not 0 < before.st_size <= 10 * 1024 * 1024:
-            raise ValueError("IMAGE_MUST_BE_REGULAR_FILE_1_BYTE_TO_10_MIB")
+            raise ValueError(f"{label}_MUST_BE_REGULAR_FILE_1_BYTE_TO_10_MIB")
         data = stream.read(10 * 1024 * 1024 + 1)
         after = os.fstat(stream.fileno())
     if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (
             after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns) or len(data) != before.st_size:
-        raise ValueError("IMAGE_CHANGED_DURING_SNAPSHOT")
+        raise ValueError(f"{label}_CHANGED_DURING_SNAPSHOT")
+    return data, {"filename": filename, "size": len(data),
+                  "sha256": hashlib.sha256(data).hexdigest(), "md5": hashlib.md5(data).hexdigest()}
+
+
+def snapshot(source: Path) -> tuple[bytes, dict]:
+    data, metadata = snapshot_bytes(source)
     kind, width, height = dimensions(data)
     if source.suffix.lower() not in ((".png",) if kind == "png" else (".jpg", ".jpeg")):
         raise ValueError("IMAGE_EXTENSION_MUST_MATCH_FORMAT")
-    return data, {"filename": filename, "format": kind, "width": width, "height": height,
-                  "size": len(data), "sha256": hashlib.sha256(data).hexdigest(),
-                  "md5": hashlib.md5(data).hexdigest()}
+    # Preserve the original dictionary order: existing image journal hashes
+    # include the serialized metadata and must survive this shared-file refactor.
+    return data, {"filename": metadata["filename"], "format": kind, "width": width, "height": height,
+                  "size": metadata["size"], "sha256": metadata["sha256"], "md5": metadata["md5"]}
 
 
 def stage(data: bytes, image: dict) -> Path:
@@ -151,10 +158,14 @@ def image_matches(kind: int, raw: bytes, record: dict) -> bool:
 
 
 def send_image(name: str, chat: str, source: Path, request_id: str) -> dict:
+    return send_asset(name, chat, source, request_id, "image", snapshot, prepare, preflight_prepared)
+
+
+def send_asset(name, chat, source, request_id, kind, snapshotter, preparer, checker) -> dict:
     path = sending._journal(request_id)
     with sending._lock():
-        data, image = snapshot(source)
-        request_hash = hashlib.sha256(json.dumps(["image", name, chat, image], ensure_ascii=False,
+        data, metadata = snapshotter(source)
+        request_hash = hashlib.sha256(json.dumps([kind, name, chat, metadata], ensure_ascii=False,
                                                 separators=(",", ":")).encode()).hexdigest()
         if path.exists():
             record = read_private(path)
@@ -167,21 +178,21 @@ def send_image(name: str, chat: str, source: Path, request_id: str) -> dict:
             old = read_private(previous)
             if old.get("request_hash") == request_hash and old.get("status") == "submission_unknown":
                 raise ValueError("SAME_OPERATION_UNKNOWN_QUERY_ORIGINAL_REQUEST")
-        prepared = prepare(name, chat, data, image)
+        prepared = preparer(name, chat, data, metadata)
         operation_hash = hashlib.sha256(json.dumps(
-            ["image", prepared["value"]["scope"], prepared["chat"], image],
+            [kind, prepared["value"]["scope"], prepared["chat"], metadata],
             ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
         for previous in path.parent.glob("*.json"):
             old = read_private(previous)
             if old.get("operation_hash") == operation_hash and old.get("status") == "submission_unknown":
                 raise ValueError("SAME_OPERATION_UNKNOWN_QUERY_ORIGINAL_REQUEST")
-        checked = preflight_prepared(prepared)
+        checked = checker(prepared)
         if not checked["ok"]:
             return checked
         record = {"ok": False, "status": "submission_unknown", "request_id": request_id,
                   "request_hash": request_hash, "operation_hash": operation_hash, "account": name,
                   "account_scope": prepared["value"]["scope"], "chat_id": prepared["chat"],
-                  "media_kind": "image", "image": image, "staged_image": str(prepared["staged_image"]),
+                  "media_kind": kind, kind: metadata, f"staged_{kind}": str(prepared[f"staged_{kind}"]),
                   "preflight": checked, "process": prepared["before"][0], "created_at": time.time(),
                   "automatic_retry_allowed": False, "native_submission_entered": None,
                   "message_send_performed": None, "local_history_integrated": False,
@@ -189,8 +200,8 @@ def send_image(name: str, chat: str, source: Path, request_id: str) -> dict:
         sending._persist(path, record)
         try:
             # Preserve the copied path through async uploads and unknown outcomes.
-            if hashlib.sha256(prepared["staged_image"].read_bytes()).hexdigest() != image["sha256"]:
-                raise ValueError("STAGED_IMAGE_CHANGED")
+            if hashlib.sha256(prepared[f"staged_{kind}"].read_bytes()).hexdigest() != metadata["sha256"]:
+                raise ValueError(f"STAGED_{kind.upper()}_CHANGED")
             result, _ = sending._dispatch(prepared, 2)
             record["native"] = result
             record["native_submission_entered"] = result.get("native_send_entered")

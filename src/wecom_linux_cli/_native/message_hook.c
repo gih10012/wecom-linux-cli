@@ -57,7 +57,7 @@ static void preflight(Trial *t) {
 
  unsigned n=strnlen(t->text,TEXT_MAX);
  if(!n || n>=TEXT_MAX || !t->chat[0] || strnlen(t->chat,256)==256 ||
-    (t->input_kind!=2 && t->input_kind!=7)) {t->failure=12;return;}
+    (t->input_kind!=2 && t->input_kind!=7 && t->input_kind!=8)) {t->failure=12;return;}
  Shared model={0},info={0};Shared *rich=NULL;
  Factory make;Allocate allocate;Constructor construct;Assign assign;Release release;
  void *ptr=ADDRESS(0x8545200);memcpy(&make,&ptr,4);
@@ -78,7 +78,8 @@ static void preflight(Trial *t) {
   String *content=(String*)(m+0x1b8);char *body=content->capacity>15?*(char**)content->bytes:(char*)content->bytes;
   if(content->length<TEXT_MAX && valid(body,content->length)) {t->rich_size=content->length;memcpy(t->serialized,body,content->length);}
  } else {
-  if(!t->width || !t->height || t->width>32768 || t->height>32768 ||
+  if((t->input_kind==7 && (!t->width || !t->height || t->width>32768 || t->height>32768)) ||
+     (t->input_kind==8 && (!t->width || t->width>10*1024*1024 || t->height)) ||
      !t->filename[0] || strnlen(t->filename,1024)==1024 ||
      (strncmp(t->text,"Z:\\",3) && strncmp(t->text,"C:\\",3))) {t->failure=12;return;}
   if(memcmp(ADDRESS(0x1ae65a0),(unsigned char[]){0x66,0x90,0x55,0x8b,0xec,0x6a,0xff,0x68},8) ||
@@ -103,8 +104,12 @@ static void preflight(Trial *t) {
   if(size<=15){memcpy(filename.bytes,t->filename,size);filename.capacity=15;}
   else{memcpy(filename.bytes,&(char*){t->filename},4);filename.capacity=size;}
   copy(file+0x24,&filename);copy(file+0x80,&text);
-  *(DWORD*)(file+0x14)=0x61000002;*(DWORD*)(file+0x98)=t->width;*(DWORD*)(file+0x9c)=t->height;
-  t->message_type=7;t->rich_present=1;
+  if(t->input_kind==7) {
+   *(DWORD*)(file+0x14)=0x61000002;*(DWORD*)(file+0x98)=t->width;*(DWORD*)(file+0x9c)=t->height;
+  } else {
+   *(DWORD*)(file+0x14)=0x11000002;*(ULONGLONG*)(file+0x90)=t->width;
+  }
+  t->message_type=t->input_kind;t->rich_present=1;
   serialize(file,&encoded);char *body=encoded.capacity>15?*(char**)encoded.bytes:(char*)encoded.bytes;
   if(encoded.length && encoded.length<TEXT_MAX && valid(body,encoded.length)) {t->rich_size=encoded.length;memcpy(t->serialized,body,encoded.length);}
   destroy(&encoded);
@@ -130,10 +135,10 @@ static void preflight(Trial *t) {
   else {Send send;void *entry=ADDRESS(0x9a07990);memcpy(&send,&entry,4);unsigned char progress[40]={0},callback[40]={0};
    InterlockedExchange((LONG*)&t->send_entered,1);
    send(manager,t->ids,&info,progress,callback);t->returned=1;
-   if(t->input_kind==7) {
+   if(t->input_kind==7 || t->input_kind==8) {
     t->info_references=*(DWORD*)((unsigned char*)info.control+4);
     t->rich_references=*(DWORD*)((unsigned char*)model.control+4);
-    /* Native async owners hold the image after these temporary references
+    /* Native async owners hold the attachment after these temporary references
      * are dropped. Otherwise retain the two small handles until client exit. */
     if(t->info_references<=1 && t->rich_references<=2) {t->handles_retained=1;return;}
    }

@@ -17,6 +17,7 @@ typedef struct {
  wchar_t executable[512];
  char chat[256],text[TEXT_MAX];
  char serialized[TEXT_MAX];
+ /* Width carries byte size for file input8; image input7 uses both dimensions. */
  DWORD input_kind,width,height,handles_retained,info_references,rich_references;
  char filename[1024];
 } Trial;
