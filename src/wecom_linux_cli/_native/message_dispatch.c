@@ -38,7 +38,7 @@ int wmain(int argc,wchar_t **argv) {
  t->creation=expected;t->mode=mode;t->expected_self_id=_wcstoui64(argv[12],NULL,10);
  wcsncpy(t->executable,path,511);
  input=_wfopen(argv[9],L"rb");if(!input)goto cleanup;
- if(fread(t->chat,1,256,input)!=256 || fread(t->text,1,TEXT_MAX,input)!=TEXT_MAX || fread(&t->input_kind,4,1,input)!=1 || fread(&t->width,4,1,input)!=1 || fread(&t->height,4,1,input)!=1 || fread(t->filename,1,1024,input)!=1024 || fgetc(input)!=EOF)goto cleanup;
+ if(fread(t->chat,1,256,input)!=256 || fread(t->text,1,TEXT_MAX,input)!=TEXT_MAX || fread(&t->input_kind,4,1,input)!=1 || fread(&t->width,4,1,input)!=1 || fread(&t->height,4,1,input)!=1 || fread(t->filename,1,1024,input)!=1024 || fread(&t->payload_size,4,1,input)!=1 || t->payload_size>CARD_MAX || fread(t->payload,1,t->payload_size,input)!=t->payload_size || fgetc(input)!=EOF)goto cleanup;
  fclose(input);input=NULL;t->manager=wcstoul(argv[10],NULL,16);
  dll=LoadLibraryW(argv[6]);FARPROC proc=dll?GetProcAddress(dll,"wecom_hook"):NULL;
  HOOKPROC callback=NULL;memcpy(&callback,&proc,sizeof(callback));
@@ -52,7 +52,7 @@ int wmain(int argc,wchar_t **argv) {
  removed=UnhookWindowsHookEx(hook);hook=NULL;
  alive=GetExitCodeProcess(process,&exitcode) && exitcode==STILL_ACTIVE &&
        CheckRemoteDebuggerPresent(process,&traced) && !traced;
- if(t->state==2 && t->rich_size<TEXT_MAX) {
+ if(t->state==2 && t->rich_size<=CARD_MAX) {
   output=_wfopen(argv[11],L"wb");
   if(output) {fwrite(t->serialized,1,t->rich_size,output);fclose(output);output=NULL;}
  }

@@ -6,7 +6,8 @@
 #include <stdlib.h>
 #define MAGIC 0x57434c31
 #define TEXT_MAX 4096
-#define MESSAGE_NAME L"WecomLinuxCliMessage.v2"
+#define CARD_MAX 65536
+#define MESSAGE_NAME L"WecomLinuxCliMessage.v3"
 typedef struct {
  DWORD magic,pid,tid,nonce,mode,manager;
  ULONGLONG creation,expected_self_id;
@@ -16,9 +17,11 @@ typedef struct {
  DWORD ids[4];
  wchar_t executable[512];
  char chat[256],text[TEXT_MAX];
- char serialized[TEXT_MAX];
+ char serialized[CARD_MAX+1];
  /* Width carries byte size for file input8; image input7 uses both dimensions. */
  DWORD input_kind,width,height,handles_retained,info_references,rich_references;
  char filename[1024];
+ DWORD payload_size;
+ unsigned char payload[CARD_MAX];
 } Trial;
-static inline void map_name(wchar_t *out,DWORD nonce) {swprintf(out,80,L"Local\\WecomCliMessage_%08lx",nonce);}
+static inline void map_name(wchar_t *out,DWORD nonce) {swprintf(out,80,L"Local\\WecomCliMessageV3_%08lx",nonce);}

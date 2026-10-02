@@ -57,7 +57,8 @@ static void preflight(Trial *t) {
 
  unsigned n=strnlen(t->text,TEXT_MAX);
  if(!n || n>=TEXT_MAX || !t->chat[0] || strnlen(t->chat,256)==256 ||
-    (t->input_kind!=2 && t->input_kind!=7 && t->input_kind!=8 && t->input_kind!=29)) {t->failure=12;return;}
+    (t->input_kind!=2 && t->input_kind!=7 && t->input_kind!=8 && t->input_kind!=29 &&
+     t->input_kind!=13 && t->input_kind!=78)) {t->failure=12;return;}
  Shared model={0},info={0};Shared *rich=NULL;
  Factory make;Allocate allocate;Constructor construct;Assign assign;Release release;
  void *ptr=ADDRESS(0x8545200);memcpy(&make,&ptr,4);
@@ -77,6 +78,40 @@ static void preflight(Trial *t) {
   if(valid(rich->control,12) && valid(rich->pointer,32) && *(DWORD*)rich->pointer==(DWORD)(uintptr_t)ADDRESS(0xb372328))t->rich_present=1;
   String *content=(String*)(m+0x1b8);char *body=content->capacity>15?*(char**)content->bytes:(char*)content->bytes;
   if(content->length<TEXT_MAX && valid(body,content->length)) {t->rich_size=content->length;memcpy(t->serialized,body,content->length);}
+ } else if(t->input_kind==13 || t->input_kind==78) {
+  /* Both normal GUI forward paths use LinkMessage, including unknown field107
+   * for WeApp. Its New() allocates exactly 0x50; the observed separate 0x10
+   * shared control destroys the protobuf through its virtual destructor. */
+  if(!t->payload_size || t->payload_size>CARD_MAX ||
+     memcmp(ADDRESS(0x20c0bc0),(unsigned char[]){0x66,0x90,0x55,0x8b,0xec,0x6a,0xff,0x68},8) ||
+     memcmp(ADDRESS(0xa190010),(unsigned char[]){0x55,0x8b,0xec,0x56,0x8b,0xf1,0x8b,0x06},8) ||
+     memcmp(ADDRESS(0xa1900b0),(unsigned char[]){0x55,0x8b,0xec,0x6a,0xff,0x68,0x3e,0xa4},8) ||
+     memcmp(ADDRESS(0x5f79e0),(unsigned char[]){0xe9,0xc2,0xff,0xff,0xff,0xcc,0xcc,0xcc},8)) {t->failure=18;return;}
+  typedef BOOL (__thiscall *Parse)(void*,const String*);
+  typedef String *(__thiscall *Serialize)(void*,String*);
+  typedef void (__thiscall *DestroyString)(String*);
+  Constructor card_construct;Parse parse;Serialize serialize;DestroyString destroy;
+  ptr=ADDRESS(0x20c0bc0);memcpy(&card_construct,&ptr,4);
+  ptr=ADDRESS(0xa190010);memcpy(&parse,&ptr,4);
+  ptr=ADDRESS(0xa1900b0);memcpy(&serialize,&ptr,4);
+  ptr=ADDRESS(0x5f79e0);memcpy(&destroy,&ptr,4);
+  typedef void (__cdecl *Free)(void*,unsigned);
+  Free deallocate;ptr=ADDRESS(0xa41ee29);memcpy(&deallocate,&ptr,4);
+  DWORD *card_block=(DWORD*)allocate(0x10);if(!card_block) {t->failure=14;return;}
+  void *card=allocate(0x50);if(!card) {deallocate(card_block,0x10);t->failure=14;return;}
+  memset(card_block,0,0x10);memset(card,0,0x50);
+  card_block[0]=(DWORD)(uintptr_t)ADDRESS(0xb36574c);card_block[1]=1;card_block[2]=1;card_block[3]=(DWORD)(uintptr_t)card;
+  model.pointer=card;model.control=card_block;card_construct(card);t->model_constructed=1;rich=&model;
+  String input={0},encoded={0};input.length=t->payload_size;
+  if(input.length<=15) {memcpy(input.bytes,t->payload,input.length);input.capacity=15;}
+  else {memcpy(input.bytes,&(unsigned char*){t->payload},4);input.capacity=input.length;}
+  if(!parse(card,&input) || *(DWORD*)card!=(DWORD)(uintptr_t)ADDRESS(0xb3bb740)) {
+   t->failure=19;release(&model);t->model_released=1;return;
+  }
+  t->message_type=t->input_kind;t->rich_present=1;
+  serialize(card,&encoded);char *body=encoded.capacity>15?*(char**)encoded.bytes:(char*)encoded.bytes;
+  if(encoded.length && encoded.length<=CARD_MAX && valid(body,encoded.length)) {t->rich_size=encoded.length;memcpy(t->serialized,body,encoded.length);}
+  destroy(&encoded);
  } else if(t->input_kind==29) {
   /* EmotionMessage is a 0x50 protobuf, with its own shared control block.
    * GUI local-GIF capture has all 14 presence bits set, source in field1,
@@ -166,7 +201,7 @@ static void preflight(Trial *t) {
   else {Send send;void *entry=ADDRESS(0x9a07990);memcpy(&send,&entry,4);unsigned char progress[40]={0},callback[40]={0};
    InterlockedExchange((LONG*)&t->send_entered,1);
    send(manager,t->ids,&info,progress,callback);t->returned=1;
-   if(t->input_kind==7 || t->input_kind==8 || t->input_kind==29) {
+   if(t->input_kind!=2) {
     t->info_references=*(DWORD*)((unsigned char*)info.control+4);
     t->rich_references=*(DWORD*)((unsigned char*)model.control+4);
     /* Native async owners hold the attachment after these temporary references

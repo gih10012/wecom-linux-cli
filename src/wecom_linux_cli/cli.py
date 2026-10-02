@@ -17,6 +17,7 @@ from .sending import preflight, send_text, send_status
 from .sending_images import preflight as image_preflight, send_image
 from .sending_files import preflight as file_preflight, send_file
 from .sending_stickers import preflight as sticker_preflight, send_sticker
+from .sending_cards import forward, message_xml, send_xml, xml_preflight
 from .media import export as export_media
 
 
@@ -54,6 +55,21 @@ def main() -> int:
             send.add_argument("--request-id", required=True)
     send_query = sub.add_parser("send-status", help="Read/reconcile an existing request; never sends")
     send_query.add_argument("--request-id", required=True)
+    for command in ("forward", "message-xml"):
+        card = sub.add_parser(command, help="Read/forward an exact locally synced article or mini-program")
+        card.add_argument("--account", default="me")
+        card.add_argument("--chat", required=True)
+        card.add_argument("--message-id", type=int, required=True)
+        if command == "forward":
+            card.add_argument("--recipient", required=True)
+            card.add_argument("--request-id", required=True)
+    for command in ("send-xml", "send-xml-preflight"):
+        card = sub.add_parser(command, help="Native card XML; caller checks recipient authorization")
+        card.add_argument("--account", default="me")
+        card.add_argument("--chat", required=True)
+        card.add_argument("--xml", type=Path, required=True)
+        if command == "send-xml":
+            card.add_argument("--request-id", required=True)
     for command in ("send-image", "send-image-preflight", "send-file", "send-file-preflight", "send-sticker", "send-sticker-preflight"):
         media = command.split("-")[1]
         send = sub.add_parser(command, help=f"Native {media}; caller checks recipient authorization")
@@ -110,6 +126,14 @@ def main() -> int:
             result = send_sticker(args.account, args.chat, args.sticker, args.request_id)
         elif args.command == "send-status":
             result = send_status(args.request_id)
+        elif args.command == "message-xml":
+            result = message_xml(args.account, args.chat, args.message_id)
+        elif args.command == "forward":
+            result = forward(args.account, args.chat, args.message_id, args.recipient, args.request_id)
+        elif args.command == "send-xml":
+            result = send_xml(args.account, args.chat, args.xml, args.request_id)
+        elif args.command == "send-xml-preflight":
+            result = xml_preflight(args.account, args.chat, args.xml)
         elif args.command == "media":
             result = export_media(args.account, args.chat, args.message_id)
         else:

@@ -71,7 +71,7 @@ def _lock():
 def artifacts() -> dict:
     source = Path(__file__).parent / "_native"
     files = ("message_hook.h", "message_hook.c", "message_dispatch.c", "message_resolve.c")
-    digest = hashlib.sha256(b"native-message-v2-send-enabled\0" +
+    digest = hashlib.sha256(b"native-message-v3-send-enabled\0" +
                             b"".join((source / name).read_bytes() for name in files)).hexdigest()
     folder = _folder(private_root() / "native" / digest)
     result = {}
@@ -176,6 +176,9 @@ def _prepare(name: str, chat: str, text: str) -> dict:
 
 
 def _dispatch(prepared: dict, mode: int) -> tuple[dict, bytes]:
+    payload = prepared.get("payload", b"")
+    if not isinstance(payload, bytes) or len(payload) > 65536:
+        raise ValueError("INVALID_NATIVE_CARD_PAYLOAD")
     built, probe, resolution = (prepared[key] for key in ("built", "probe", "resolution"))
     folder = _folder(private_root() / "send-temporary")
     input_descriptor, input_name = tempfile.mkstemp(dir=folder)
@@ -187,6 +190,8 @@ def _dispatch(prepared: dict, mode: int) -> tuple[dict, bytes]:
             stream.write(prepared["text"].encode("utf-8").ljust(4096, b"\0"))
             stream.write(struct.pack("<III", prepared.get("input_kind", 2), prepared.get("file_size", prepared.get("width", 0)), prepared.get("height", 0)))
             stream.write(prepared.get("filename", "").encode("utf-8").ljust(1024, b"\0"))
+            stream.write(struct.pack("<I", len(payload)))
+            stream.write(payload)
             stream.flush()
             os.fsync(stream.fileno())
         if client.processes(prepared["prefix"], prepared["executable"]) != prepared["before"]:
@@ -199,7 +204,7 @@ def _dispatch(prepared: dict, mode: int) -> tuple[dict, bytes]:
                           resolution["manager"], _winpath(Path(output_name)),
                           prepared["value"]["self_id"]], prepared["env"])
         content = Path(output_name).read_bytes()
-        if len(content) >= 4096:
+        if len(content) > 65536:
             raise ValueError("INVALID_PREFLIGHT_CONTENT_SIZE")
         result["process_identity_unchanged"] = (
             client.processes(prepared["prefix"], prepared["executable"]) == prepared["before"])
@@ -250,6 +255,10 @@ def _reconcile(record: dict) -> dict:
             from .sending_stickers import sticker_matches
             raw = bytes(content) if isinstance(content, (bytes, bytearray, memoryview)) else b""
             body_matches = sticker_matches(content_type, raw, record)
+        elif record.get("media_kind") == "card":
+            from .sending_cards import card_matches
+            raw = bytes(content) if isinstance(content, (bytes, bytearray, memoryview)) else b""
+            body_matches = card_matches(content_type, raw, record)
         else:
             body_matches = decode(content_type, content).get("text") == record["text"]
         matched = (str(sender) == value["self_id"] and chat == record["chat_id"] and

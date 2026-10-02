@@ -3,7 +3,7 @@
 Local tools for the account owner's WeCom client on Linux. Reads locally
 synced conversations and messages from an isolated official Windows client
 under Wine, including committed WAL changes, and sends native personal text,
-PNG/JPEG images, ordinary files and native GIF stickers
+PNG/JPEG images, ordinary files, native GIF stickers and article/mini-program cards
 through the running client. This project is
 independent of Tencent's official `wecom-cli`, whose bot channel has a
 different identity and scope.
@@ -30,6 +30,10 @@ wecom-linux send-file-preflight --chat 'EXACT_CHAT_ID' --file '/path/文件.zip'
 wecom-linux send-file --chat 'EXACT_CHAT_ID' --file '/path/文件.zip' --request-id 'unique-file-01'
 wecom-linux send-sticker-preflight --chat 'EXACT_CHAT_ID' --sticker '/path/表情.gif'
 wecom-linux send-sticker --chat 'EXACT_CHAT_ID' --sticker '/path/表情.gif' --request-id 'unique-sticker-01'
+wecom-linux forward --chat 'EXACT_SOURCE_CHAT_ID' --message-id 123 --recipient 'EXACT_TARGET_CHAT_ID' --request-id 'unique-card-01'
+wecom-linux message-xml --chat 'EXACT_SOURCE_CHAT_ID' --message-id 123
+wecom-linux send-xml-preflight --chat 'EXACT_TARGET_CHAT_ID' --xml '/private/card.xml'
+wecom-linux send-xml --chat 'EXACT_TARGET_CHAT_ID' --xml '/private/card.xml' --request-id 'unique-xml-01'
 wecom-linux send-status --request-id 'unique-request-01'
 wecom-linux media export --chat 'EXACT_CHAT_ID' --message-id 123
 ```
@@ -117,7 +121,7 @@ pagination, all synced rows in a selected conversation, and an independently
 read new GUI-generated text message with Chinese, newline and emoji. This
 proves CLI reads, not complete cloud history.
 
-Native text, image, file and sticker sending supports only the SHA-256-pinned official Windows
+Native text, image, file, sticker and card sending supports only the SHA-256-pinned official Windows
 5.0.11.6018 executable under the configured isolated Wine prefix. It requires
 32-bit MinGW on the first use, one untraced client, a unique native manager and
 the configured account's current user ID. A same-thread Windows message hook
@@ -236,3 +240,41 @@ PYTHONPATH=src python -m unittest discover -s tests -v
 
 The decoder test fixture was generated with the independent upstream C
 implementation; see [fixture provenance](tests/fixtures/README.md).
+
+`forward --chat SOURCE --message-id ID --recipient TARGET --request-id ID`
+forwards an exact locally synced article (type13) or mini-program (type78)
+through the native card pipeline. `message-xml --chat SOURCE --message-id ID`
+exports editable UTF-8 `msg/appmsg` XML, including a `wecom-native` base64
+payload with its SHA-256 so unknown native fields and resource metadata survive
+editing. Treat these exports as private account data. `send-xml --chat TARGET
+--xml /private/card.xml --request-id ID` sends the edited card;
+`send-xml-preflight` constructs and releases it without sending.
+
+XML files must be 1–65536 UTF-8 bytes, without NUL, DTD or entity declarations.
+The supported appmsg types are article5 and mini-program33. Article XML can edit
+title, description, HTTP(S) URL and thumbnail URL. Mini-program XML can edit
+title, description, display name and app icon; its actual app ID, username,
+page path, type and native share/resource metadata must come from an exported
+source. New mini-program identities, arbitrary XML tags, merged histories and
+type36 are not covered. The client may normalize fields; this is not an opaque
+arbitrary-XML transport. Native card payloads are limited to 65536 bytes and
+checked by a construct-only parse/serialize preflight before dispatch.
+
+Card request IDs bind the exact source account/chat/message and payload, or
+custom XML bytes, as well as the target and action. Reusing a forward ID for
+an XML send conflicts even with equivalent content. If the source was removed,
+query `send-status` instead of retrying under a new ID. Native card construction
+uses the observed LinkMessage allocation, separate shared control and client
+parser/destructor, with a distinct v3 hook protocol to coexist with older
+pinned helpers. Existing text/image/file/sticker request identities remain valid.
+
+Installed ordinary CLI acceptance on 2026-10-02 independently received one
+article forward, one mini-program forward, and edited-title/description XML
+for each in the authorized personal WeChat peer. Type49/app5 or app33, native
+server IDs, Chinese/newline/emoji and mini-program app identity/page matched.
+Article cards displayed their thumbnails in both clients; mini-program cards
+rendered titles and identity but their source thumbnail metadata was empty,
+so both normal GUI and CLI forwarding displayed a placeholder. Complete
+mini-program thumbnail transfer and click-through are not yet verified.
+All four same-ID replays added no messages; changed actions were rejected.
+Native v3 text/image/file/sticker construct-only checks passed without sends.
