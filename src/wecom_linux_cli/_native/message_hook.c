@@ -57,7 +57,7 @@ static void preflight(Trial *t) {
 
  unsigned n=strnlen(t->text,TEXT_MAX);
  if(!n || n>=TEXT_MAX || !t->chat[0] || strnlen(t->chat,256)==256 ||
-    (t->input_kind!=2 && t->input_kind!=7 && t->input_kind!=8)) {t->failure=12;return;}
+    (t->input_kind!=2 && t->input_kind!=7 && t->input_kind!=8 && t->input_kind!=29)) {t->failure=12;return;}
  Shared model={0},info={0};Shared *rich=NULL;
  Factory make;Allocate allocate;Constructor construct;Assign assign;Release release;
  void *ptr=ADDRESS(0x8545200);memcpy(&make,&ptr,4);
@@ -77,6 +77,37 @@ static void preflight(Trial *t) {
   if(valid(rich->control,12) && valid(rich->pointer,32) && *(DWORD*)rich->pointer==(DWORD)(uintptr_t)ADDRESS(0xb372328))t->rich_present=1;
   String *content=(String*)(m+0x1b8);char *body=content->capacity>15?*(char**)content->bytes:(char*)content->bytes;
   if(content->length<TEXT_MAX && valid(body,content->length)) {t->rich_size=content->length;memcpy(t->serialized,body,content->length);}
+ } else if(t->input_kind==29) {
+  /* EmotionMessage is a 0x50 protobuf, with its own shared control block.
+   * GUI local-GIF capture has all 14 presence bits set, source in field1,
+   * dimensions in fields7/8 and both enum fields2/11 set to 2. */
+  if(!t->width || !t->height || t->width>32768 || t->height>32768 ||
+     (strncmp(t->text,"Z:\\",3) && strncmp(t->text,"C:\\",3))) {t->failure=12;return;}
+  if(memcmp(ADDRESS(0x1e6b650),(unsigned char[]){0x66,0x90,0x55,0x8b,0xec,0x6a,0xff,0x68},8) ||
+     memcmp(ADDRESS(0x802c00),(unsigned char[]){0x55,0x8b,0xec,0x6a,0xff,0x68,0x34,0xbf},8) ||
+     memcmp(ADDRESS(0xa1900b0),(unsigned char[]){0x55,0x8b,0xec,0x6a,0xff,0x68,0x3e,0xa4},8) ||
+     memcmp(ADDRESS(0x5f79e0),(unsigned char[]){0xe9,0xc2,0xff,0xff,0xff,0xcc,0xcc,0xcc},8)) {t->failure=18;return;}
+  typedef void *(__thiscall *CopyString)(void*,const String*);
+  typedef String *(__thiscall *Serialize)(void*,String*);
+  typedef void (__thiscall *DestroyString)(String*);
+  CopyString copy;Serialize serialize;DestroyString destroy;Constructor emotion_construct;
+  ptr=ADDRESS(0x802c00);memcpy(&copy,&ptr,4);
+  ptr=ADDRESS(0xa1900b0);memcpy(&serialize,&ptr,4);
+  ptr=ADDRESS(0x5f79e0);memcpy(&destroy,&ptr,4);
+  ptr=ADDRESS(0x1e6b650);memcpy(&emotion_construct,&ptr,4);
+  DWORD *emotion_block=(DWORD*)allocate(0x60);if(!emotion_block) {t->failure=14;return;}
+  memset(emotion_block,0,0x60);emotion_block[0]=(DWORD)(uintptr_t)ADDRESS(0xb965234);emotion_block[1]=1;emotion_block[2]=1;
+  model.pointer=(unsigned char*)emotion_block+0x10;model.control=emotion_block;
+  emotion_construct(model.pointer);t->model_constructed=1;rich=&model;
+  unsigned char *emotion=(unsigned char*)model.pointer;
+  if(*(DWORD*)emotion!=(DWORD)(uintptr_t)ADDRESS(0xb39dc14)) {t->failure=13;release(&model);t->model_released=1;return;}
+  copy(emotion+0x10,&text);*(DWORD*)(emotion+0x8)=0x3fff;
+  *(DWORD*)(emotion+0x40)=t->width;*(DWORD*)(emotion+0x44)=t->height;
+  *(DWORD*)(emotion+0x48)=2;*(DWORD*)(emotion+0x4c)=2;
+  t->message_type=29;t->rich_present=1;String encoded={0};
+  serialize(emotion,&encoded);char *body=encoded.capacity>15?*(char**)encoded.bytes:(char*)encoded.bytes;
+  if(encoded.length && encoded.length<TEXT_MAX && valid(body,encoded.length)) {t->rich_size=encoded.length;memcpy(t->serialized,body,encoded.length);}
+  destroy(&encoded);
  } else {
   if((t->input_kind==7 && (!t->width || !t->height || t->width>32768 || t->height>32768)) ||
      (t->input_kind==8 && (!t->width || t->width>10*1024*1024 || t->height)) ||
@@ -135,7 +166,7 @@ static void preflight(Trial *t) {
   else {Send send;void *entry=ADDRESS(0x9a07990);memcpy(&send,&entry,4);unsigned char progress[40]={0},callback[40]={0};
    InterlockedExchange((LONG*)&t->send_entered,1);
    send(manager,t->ids,&info,progress,callback);t->returned=1;
-   if(t->input_kind==7 || t->input_kind==8) {
+   if(t->input_kind==7 || t->input_kind==8 || t->input_kind==29) {
     t->info_references=*(DWORD*)((unsigned char*)info.control+4);
     t->rich_references=*(DWORD*)((unsigned char*)model.control+4);
     /* Native async owners hold the attachment after these temporary references

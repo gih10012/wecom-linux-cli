@@ -246,6 +246,10 @@ def _reconcile(record: dict) -> dict:
             from .sending_files import file_matches
             raw = bytes(content) if isinstance(content, (bytes, bytearray, memoryview)) else b""
             body_matches = file_matches(content_type, raw, record)
+        elif record.get("media_kind") == "sticker":
+            from .sending_stickers import sticker_matches
+            raw = bytes(content) if isinstance(content, (bytes, bytearray, memoryview)) else b""
+            body_matches = sticker_matches(content_type, raw, record)
         else:
             body_matches = decode(content_type, content).get("text") == record["text"]
         matched = (str(sender) == value["self_id"] and chat == record["chat_id"] and
