@@ -278,3 +278,21 @@ so both normal GUI and CLI forwarding displayed a placeholder. Complete
 mini-program thumbnail transfer and click-through are not yet verified.
 All four same-ID replays added no messages; changed actions were rejected.
 Native v3 text/image/file/sticker construct-only checks passed without sends.
+
+## Protocol web links
+
+`wecom-linux web resolve --url 'ACTUAL_LINK'` parses HTTP URLs and explicit HTTP
+parameters in WeChat/WeCom webview envelopes. `--probe` performs a bounded GET.
+Opaque mini-program tickets return `CLIENT_REQUIRED`; OAuth callbacks are not
+treated as authenticated business pages.
+
+`web open --url 'HTTP_PAGE' --browser edge` (or `chrome`) requests a normal
+browser window. For an observed HTTP equivalent, use `web bind --url
+'EXACT_SOURCE_LINK' --target 'OBSERVED_HTTP_SOURCE' --view json`, then `web relay
+--url 'EXACT_SOURCE_LINK' --seconds 300 --browser chrome`. Bindings are private,
+exact-source mappings shared with `wechat-linux`; no school adapters are built
+into the CLI. Relay output streams a temporary localhost URL and closes on
+Ctrl+C or its deadline. It supports complete JSON, plain text, and HTML text
+reading, with optional origin-scoped private HTTP session state; it does not
+run a mini-program or emulate client OAuth/JS SDK APIs. HTTP success and browser
+launch are reported separately from actual business/content verification.
