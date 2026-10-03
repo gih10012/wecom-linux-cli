@@ -8,7 +8,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - run: sudo apt-get update && sudo apt-get install -y build-essential libssl-dev
+      - run: sudo apt-get update && sudo apt-get install -y build-essential libssl-dev gcc-mingw-w64-i686
       - run: python -m pip install .
       - run: python -m unittest discover -s tests -v
       - run: wecom-linux --help
+      - name: Compile native call controls
+        run: |
+          mkdir -p .ci-native
+          i686-w64-mingw32-gcc -shared -O2 -Wall -Wextra -Werror -Wl,--kill-at src/wecom_linux_cli/_native/call_hook.c -o .ci-native/call_hook.dll -luser32
+          i686-w64-mingw32-gcc -O2 -Wall -Wextra -Werror -municode src/wecom_linux_cli/_native/call_probe.c -o .ci-native/call_probe.exe -luser32

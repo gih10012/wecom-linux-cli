@@ -15,6 +15,13 @@ def length_field(number, data):
 
 
 class ContentTests(unittest.TestCase):
+    def test_native_voice_history_preserves_display_and_raw_fields(self):
+        raw = b'\x08\x02\x10\x05' + length_field(3, '通话时长00:02'.encode()) + b'\xa0\x01\x02'
+        result = decode(40, raw)
+        self.assertEqual(result['text'], '通话时长00:02')
+        self.assertEqual(result['fields'][-1], {'number': 20, 'wire': 0, 'value': 2})
+        self.assertIsNone(decode(40, raw + length_field(3, b'other'))['text'])
+
     def test_text_preserves_whitespace_single_character_and_emoji(self):
         for text in ("a", "\n中文\n✅\n", "同一段\n同一段", " x "):
             raw = length_field(1, b"\x08\x00" + length_field(2, length_field(1, text.encode())))

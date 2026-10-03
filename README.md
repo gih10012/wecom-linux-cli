@@ -297,6 +297,69 @@ reading, with optional origin-scoped private HTTP session state; it does not
 run a mini-program or emulate client OAuth/JS SDK APIs. HTTP success and browser
 launch are reported separately from actual business/content verification.
 
+## Private voice calls
+
+```sh
+wecom-linux call inspect --account me
+wecom-linux call preflight --account me --chat EXACT_PRIVATE_CHAT_ID
+wecom-linux call start --account me --chat EXACT_PRIVATE_CHAT_ID --request-id CALL_ID
+wecom-linux call answer --account me --invitation-token CURRENT_TOKEN --request-id ANSWER_ID
+wecom-linux call status --request-id CALL_ID
+wecom-linux call play --request-id CALL_ID --file /path/notification.wav --audio-request-id AUDIO_ID --wait-seconds 30
+wecom-linux call hangup --request-id CALL_ID
+```
+
+These commands control the normal UI on the verified client UI thread. They
+require the configured official 5.0.11.6018 client, matching executable/DuiLib/owl
+hashes, Wine, a 32-bit MinGW compiler, and the installed niri-computer-use display
+session helper. UI mutations wake and restore the owner's display session;
+another active display session is refused. No sudo or client restart is needed.
+The small native helper stays loaded until client exit for callback safety.
+
+`start` accepts exact private conversation IDs (`S:ID_ID`). The target must have
+a cached, attached normal chat view: open it in the client if preflight requests
+this. The backend validates the exact conversation string, account, process
+creation time, UI thread, view type, parent and window before activating the
+normal voice handler. It has no recipient authorization whitelist. The calling
+agent checks authorization before inviting or accepting a call. Group invitation
+and member selection are not implemented by these WeCom commands.
+
+`inspect` reads normal call controls without inviting or accepting. Incoming
+tokens bind the account, current process/window/root/button and full caption;
+captions do not expose an exact native caller ID. Confirm authorization using
+the actual caller context before `answer`; a matching name alone is insufficient.
+`preflight` also resolves 19 system DLLs through the verified client's normal CRT
+resolver on its UI thread, avoiding the loader-lock cycle observed during voice
+component initialization. Run it after starting the client before incoming-call
+tests; `start` and `answer` also perform this local warmup. It makes no invitation.
+
+IDs are journaled before native UI mutations, in private
+`~/.local/state/wecom-linux-cli/calls/`. Same-ID replay performs no second action;
+changed payloads conflict. Unknown invite/accept/hangup outcomes block new IDs:
+query the original ID and independently check the client before
+`call resolve --request-id ORIGINAL_ID --ended`. Resolution changes only the
+local journal. Hangup binds the original call window and cannot control another
+current call.
+
+`call play` waits up to 120 seconds for the original private call's elapsed
+clock and typed hangup control, then selects its one active capture stream.
+The transient "connected" tip may disappear; a ringing tip, incomplete tree,
+group layout or capture stream alone never permits playback. Audio uses its own
+request ID and the restoration/recovery rules below. The result's
+`call_connection_verified_before_playback` describes the UI check; remote audio
+delivery still requires independent evidence.
+
+Installed-command acceptance on 2026-10-03 covers private placement, incoming
+acceptance, connected playback, normal hangup and replay guards against the
+owner's personal WeChat client. In one connected call, generated Chinese speech
+was independently captured at both receiving clients (envelope correlations
+0.87 and 0.95); both histories report 00:22. One normal tray exit/client restart
+preserved the account/history and passed new-process incoming/outgoing control,
+connected playback, hangup and replay after ordinary system-DLL warmup. The
+outgoing target view was reopened in the normal client before preflight. This
+does not cover restarting the whole Wine runtime. Group calls and long-term
+voice stability remain separate acceptance work.
+
 ## Existing call audio
 
 ```sh
@@ -327,7 +390,8 @@ source CLI playback of generated Chinese speech was independently captured
 at each receiving client's selected output stream (envelope correlations
 0.88 and 0.93). Standalone routing, restoration, and no-playback replay also
 passed. Installed-command acceptance is recorded separately by the skill.
-Call placement/control and selected-member group calls remain in development.
+Private call controls are described above; selected-member group calls remain
+in development.
 The audio result's `remote_delivery_verified` and
 `call_connection_verified` stay false: neither is inferred from local playback.
 

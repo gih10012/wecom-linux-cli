@@ -78,6 +78,11 @@ def decode(kind: int, raw) -> dict:
             # Do not heuristically join binary strings into a fake body.
             result.update(text=nested(data, (1, 2, 1)).decode("utf-8"),
                           decode_status="windows_text_1_2_1")
+        elif kind == 40:
+            # Native voice-call bubble, verified against both opposite clients.
+            # The display label is field3; preserve all other protocol fields.
+            result.update(text=nested(data, (3,)).decode("utf-8"),
+                          decode_status="windows_voice_bubble_3")
         else:
             result["decode_status"] = "raw_fields_preserved"
             if kind in (14, 15, 16):
