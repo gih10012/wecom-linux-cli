@@ -164,6 +164,33 @@ def classify(prepared, window, tree):
     handle = dict(windows_pid=prepared['probe']['windows_pid'],
                   creation_filetime=prepared['probe']['creation_filetime'],
                   hwnd=window['hwnd'], root=window['root'])
+    if window['kind'] == 'member_selector':
+        if (label('selectedtitle') != '选择联系人' or
+                any(sum(n.get('name') == name for n in nodes) != 1
+                    for name in ('okbtn', 'cancelbtn', 'searchedit'))):
+            raise ValueError('COMPLETE_MEMBER_SELECTOR_SNAPSHOT_REQUIRED')
+        # The same normal window type serves several selection workflows.
+        # Captions and checkboxes do not bind native member IDs or prove that
+        # a voice invitation was submitted. Never classify this as a call.
+        result = dict(kind='member_selector', handle=handle,
+                    conversation_caption=label('conversation_name'),
+                    search_text=label('searchedit'),
+                    visible_checkbox_count=sum(n.get('name') == 'checkbox' for n in nodes),
+                    node_count=tree.get('node_count'), read_only=True,
+                    selector_purpose_verified=False, member_identity_verified=False,
+                    selection_verified=False, call_connection_verified=False)
+        cancel = tree.get('cancel_button')
+        if (tree.get('cancel_count') == tree.get('cancel_caption_count') == 1 and
+                isinstance(cancel, str) and re.fullmatch(r'[0-9a-fA-F]+', cancel) and int(cancel, 16)):
+            descriptor = dict(handle, cancel_button=cancel, caption=label('selectedtitle'),
+                              conversation_caption=result['conversation_caption'],
+                              account_scope=prepared['value']['scope'])
+            result.update(cancel_descriptor=descriptor, selector_token=hashlib.sha256(
+                json.dumps(descriptor, sort_keys=True, ensure_ascii=False).encode()).hexdigest(),
+                cancel_control_verified=True)
+        else:
+            result['cancel_control_verified'] = False
+        return result
     if (window['kind'] == 'possible_invitation' and tree.get('accept_count') == 1 and
             label('single_voip_tips') == '邀请你语音通话' and label('inviter_name') and
             sum(n.get('name') == 'reject_btn' for n in nodes) == 1):
@@ -196,7 +223,7 @@ def classify(prepared, window, tree):
 
 
 def observe(prepared):
-    incoming, active, ended = [], [], []
+    incoming, active, ended, selectors = [], [], [], []
     for window in probe(prepared):
         if 'hwnd' not in window or window['tid'] != prepared['resolution']['tid']:
             continue
@@ -206,7 +233,9 @@ def observe(prepared):
         item = classify(prepared, window, tree)
         if not item:
             continue
-        if item['kind'] == 'incoming':
+        if item['kind'] == 'member_selector':
+            selectors.append(item)
+        elif item['kind'] == 'incoming':
             incoming.append(item)
         elif item['state'] == 'ended':
             ended.append(item)
@@ -216,12 +245,39 @@ def observe(prepared):
         raise ValueError('MULTIPLE_ACTIVE_CALL_WINDOWS')
     return dict(ok=True, read_only=True, transport='normal_duilib_ui_thread',
                 incoming=incoming, active=active[0] if active else None, ended=ended,
+                member_selectors=selectors,
                 call_connection_verified=bool(active and active[0]['call_connection_verified']))
 
 
 def inspect(name='me'):
     with sending._lock():
         return observe(context(name))
+
+
+def selector_cancel(name, token):
+    """Cancel one current local picker; this never submits a voice invitation."""
+    if not re.fullmatch(r'[0-9a-f]{64}', token):
+        raise ValueError('INVALID_MEMBER_SELECTOR_TOKEN')
+    with lock(), sending._lock():
+        prepared = context(name)
+        live = observe(prepared)
+        candidates = [s for s in live.get('member_selectors', [])
+                      if s.get('selector_token') == token and s.get('cancel_control_verified')]
+        if len(candidates) != 1:
+            raise ValueError('EXACT_MEMBER_SELECTOR_CANCEL_CONTROL_NOT_FOUND')
+        descriptor = candidates[0]['cancel_descriptor']
+        payload = struct.pack('<III', int(descriptor['root'], 16),
+                              int(descriptor['cancel_button'], 16), 0)
+        with desktop_session():
+            native, body = dispatch(prepared, 2, 3, descriptor, payload)
+        after = observe(prepared)
+        closed = not any(s['handle'] == candidates[0]['handle']
+                         for s in after.get('member_selectors', []))
+        return dict(ok=bool(native.get('ok') and body and body.get('activated') and closed),
+                    selector_closed_observed=closed,
+                    native=native, native_result=body, live=after,
+                    invitation_performed=False, message_send_performed=False,
+                    automatic_retry_allowed=False)
 
 
 def warm(prepared):
@@ -239,6 +295,7 @@ def preflight(name='me', chat=None):
         result.update(read_only=False, local_system_library_warmup=warmed,
                       invitation_performed=False, native_voice_api_used=False)
         if chat:
+            require_no_selector(result)
             prepared = prepare_start(prepared)
             native, body = dispatch(prepared, 1, operation=2)
             result.update(ok=bool(native.get('ok')), target_preflight=body, native=native)
@@ -258,6 +315,11 @@ def prepare_start(prepared):
 
 def handle_matches(record, live):
     return live is not None and record.get('handle') == live.get('handle')
+
+
+def require_no_selector(live):
+    if live.get('member_selectors'):
+        raise ValueError('MEMBER_SELECTOR_OPEN_CLOSE_OR_CANCEL_BEFORE_CALL')
 
 
 def refresh(record, prepared):
@@ -345,9 +407,11 @@ def start(name, chat, request_id):
         old = replay(path, intent)
         if old:
             return old
-        prepared = prepare_start(context(name, chat))
-        block_unresolved(prepared)
+        prepared = context(name, chat)
         before = observe(prepared)
+        require_no_selector(before)
+        prepared = prepare_start(prepared)
+        block_unresolved(prepared)
         if before['active'] or before['incoming']:
             raise ValueError('CALL_ALREADY_ACTIVE_OR_INCOMING')
         warm(prepared)
@@ -390,6 +454,7 @@ def answer(name, token, request_id):
         prepared = context(name)
         block_unresolved(prepared)
         live = observe(prepared)
+        require_no_selector(live)
         candidates = [i for i in live['incoming'] if i['invitation_token'] == token]
         if live['active'] or len(candidates) != 1:
             raise ValueError('EXACT_INCOMING_INVITATION_NOT_FOUND')
@@ -532,7 +597,7 @@ def resolve(request_id, ended):
         path = journal(request_id)
         record = read_private(path)
         live = observe(context(record['account']))
-        if live['active'] or live['incoming']:
+        if live['active'] or live['incoming'] or live.get('member_selectors'):
             raise ValueError('CLIENT_STILL_HAS_AN_ACTIVE_OR_INCOMING_CALL')
         record.update(status='ended', resolved_ended=True, call_connection_verified=False,
                       resolution_changes_local_journal_only=True)
@@ -543,7 +608,7 @@ def resolve(request_id, ended):
 def add_parser(sub):
     parser = sub.add_parser('call', help='Normal private voice UI; caller checks invitation/answer authorization')
     commands = parser.add_subparsers(dest='call_command', required=True)
-    for command in ('inspect', 'preflight', 'start', 'answer'):
+    for command in ('inspect', 'preflight', 'start', 'answer', 'selector-cancel'):
         item = commands.add_parser(command)
         item.add_argument('--account', default='me')
         if command in ('start', 'preflight'):
@@ -552,6 +617,8 @@ def add_parser(sub):
             item.add_argument('--request-id', required=True)
         if command == 'answer':
             item.add_argument('--invitation-token', required=True)
+        if command == 'selector-cancel':
+            item.add_argument('--selector-token', required=True)
     for command in ('status', 'hangup', 'resolve'):
         item = commands.add_parser(command)
         item.add_argument('--request-id', required=True)
@@ -573,6 +640,8 @@ def run(args):
         return start(args.account, args.chat, args.request_id)
     if args.call_command == 'answer':
         return answer(args.account, args.invitation_token, args.request_id)
+    if args.call_command == 'selector-cancel':
+        return selector_cancel(args.account, args.selector_token)
     if args.call_command == 'status':
         return status(args.request_id)
     if args.call_command == 'hangup':

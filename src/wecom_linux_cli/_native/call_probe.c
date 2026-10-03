@@ -1,4 +1,4 @@
-/* Read only the exact requested chat's typed UI model. Never call native code. */
+/* Read only typed call windows and the exact requested chat's UI model. */
 #define _WIN32_WINNT 0x0601
 #include <windows.h>
 #include <tlhelp32.h>
@@ -27,11 +27,16 @@ static BOOL CALLBACK window_item(HWND h,LPARAM unused) {
  (void)unused;DWORD pid=0,tid=GetWindowThreadProcessId(h,&pid);WCHAR cls[128]={0},title[128]={0};
  if(pid!=owner_pid||!IsWindowVisible(h)||(DWORD)(uintptr_t)h==main_window||!GetClassNameW(h,cls,128))return TRUE;
  BOOL voice=!wcscmp(cls,L"WXworkWindow - 语音通话")&&GetWindowTextW(h,title,128)&&!wcscmp(title,L"语音通话");
- if(!voice&&wcscmp(cls,L"WXworkWindow"))return TRUE;
- if(!voice&&GetWindowTextW(h,title,128))return TRUE;
+ BOOL selector=!wcscmp(cls,L"weWorkSelectUser")&&GetWindowTextW(h,title,128)&&!wcscmp(title,L"选择联系人");
+ if(!voice&&!selector&&wcscmp(cls,L"WXworkWindow"))return TRUE;
+ if(!voice&&!selector&&GetWindowTextW(h,title,128))return TRUE;
  DWORD root=(DWORD)(uintptr_t)GetWindowLongPtrW(h,GWLP_USERDATA),head[2]={0},col=0,meta[5]={0};
- if(!read_bytes(owner_process,root,head,sizeof(head))||head[1]!=(DWORD)(uintptr_t)h||!read_bytes(owner_process,head[0]-4,&col,4)||!read_bytes(owner_process,col,meta,sizeof(meta))||meta[0]||meta[1])return TRUE;
- printf("{\"kind\":\"%s\",\"hwnd\":\"%lx\",\"tid\":%lu,\"root\":\"%lx\"}\n",voice?"voice":"possible_invitation",(DWORD)(uintptr_t)h,tid,root);
+ if(!read_bytes(owner_process,root,head,sizeof(head))||head[1]!=(DWORD)(uintptr_t)h||!read_bytes(owner_process,head[0]-4,&col,4)||!read_bytes(owner_process,col,meta,sizeof(meta))||meta[0]||meta[1]||meta[2])return TRUE;
+ if(selector) {
+  char type[128]={0};
+  if(!read_bytes(owner_process,meta[3]+8,type,sizeof(type))||!memchr(type,0,sizeof(type))||strcmp(type,".?AVCSelectUserFrame@ui@wework@@"))return TRUE;
+ }
+ printf("{\"kind\":\"%s\",\"hwnd\":\"%lx\",\"tid\":%lu,\"root\":\"%lx\"}\n",voice?"voice":selector?"member_selector":"possible_invitation",(DWORD)(uintptr_t)h,tid,root);
  return TRUE;
 }
 int wmain(int argc,wchar_t **argv) {

@@ -1,5 +1,6 @@
 /* Version-bound normal UI voice controls, executed on the verified owner UI thread.
- * Operations: 0 inspect/hangup, 1 answer, 2 private-call start, 4 local CRT warmup.
+ * Operations: 0 inspect/hangup, 1 answer, 2 private-call start,
+ * 3 cancel an exact normal member picker, 4 local CRT warmup.
  * No private VoIP-engine ABI, fixed coordinates, or native message submission. */
 #include "message_hook.h"
 static BOOL valid(void *address,unsigned length) {
@@ -7,19 +8,31 @@ static BOOL valid(void *address,unsigned length) {
  return p&&VirtualQuery(address,&m,sizeof(m))==sizeof(m)&&m.State==MEM_COMMIT&&
   !(m.Protect&(PAGE_NOACCESS|PAGE_GUARD))&&p>=(uintptr_t)m.BaseAddress&&p+length>=p&&p+length<=(uintptr_t)m.BaseAddress+m.RegionSize;
 }
-static BOOL type_has(void *control,const char *wanted) {
- if(!valid(control,0x130))return FALSE;
+static DWORD *type_locator(void *control) {
+ if(!valid(control,0x130))return NULL;
  DWORD *table=*(DWORD**)control;uintptr_t p=(uintptr_t)table;
- if(p<4||(p&3)||!valid((void*)(p-4),4))return FALSE;
+ if(p<4||(p&3)||!valid((void*)(p-4),4))return NULL;
  DWORD *locator=(DWORD*)(uintptr_t)table[-1];
- if(!valid(locator,20)||locator[0]!=0||locator[1]!=0)return FALSE;
+ if(!valid(locator,20)||locator[0]!=0||locator[1]>4096||locator[2]!=0)return NULL;
+ return locator;
+}
+static BOOL complete_type_is(void *object,const char *wanted) {
+ DWORD *locator=type_locator(object);if(!locator||locator[1])return FALSE;
+ char *name=(char*)(uintptr_t)(locator[3]+8);
+ return valid(name,128)&&strnlen(name,128)<128&&!strcmp(name,wanted);
+}
+static BOOL type_has(void *control,const char *wanted) {
+ DWORD *locator=type_locator(control);if(!locator)return FALSE;
  DWORD *hierarchy=(DWORD*)(uintptr_t)locator[4];
  if(!valid(hierarchy,16)||!hierarchy[2]||hierarchy[2]>128)return FALSE;
  DWORD *bases=(DWORD*)(uintptr_t)hierarchy[3];if(!valid(bases,hierarchy[2]*4))return FALSE;
  for(DWORD i=0;i<hierarchy[2];i++) {
   DWORD *b=(DWORD*)(uintptr_t)bases[i];if(!valid(b,24))return FALSE;
   char *name=(char*)(uintptr_t)(b[0]+8);if(!valid(name,128)||strnlen(name,128)==128)return FALSE;
-  if(b[2]==0&&b[3]==0xffffffff&&!strcmp(name,wanted))return TRUE;
+  /* A CControlUI interface can be a nonvirtual base at a nonzero offset.
+   * Match its PMD to this vtable's complete-object locator; do not accept
+   * virtual inheritance or an unrelated base from the same hierarchy. */
+  if(b[2]==locator[1]&&b[3]==0xffffffff&&b[4]==0&&!strcmp(name,wanted))return TRUE;
  }
  return FALSE;
 }
@@ -34,6 +47,7 @@ static CountGetter tree_count;static ItemGetter tree_item;
 static StringGetter string_data;static BooleanGetter tree_visible;
 static Trial *trial;static HWND tree_window;static unsigned nodes;static size_t used;static BOOL complete;static RECT viewport;
 static void *hang_outer,*hang_inner;static unsigned outer_count,inner_count;static int button_kind;static void *answer_button;static unsigned answer_count;static int answer_kind;static void *inviter_name,*invite_tips;static unsigned inviter_count,tips_count,reject_count;
+static void *cancel_button,*selector_title;static unsigned cancel_count,selector_title_count,cancel_caption_count;
 static BOOL named(void *node,const WCHAR *expected) {
  const WCHAR *n=string_data((unsigned char*)node+0x78);size_t len=wcslen(expected);
  return valid((void*)n,(unsigned)(len+1)*2)&&!memcmp(n,expected,(len+1)*2);
@@ -65,6 +79,12 @@ static void walk(void *control,void *parent,unsigned depth) {
  if(named(control,L"inviter_name")){inviter_name=control;inviter_count++;}
  if(named(control,L"single_voip_tips")){invite_tips=control;tips_count++;}
  if(named(control,L"reject_btn"))reject_count++;
+ if(named(control,L"selectedtitle")){selector_title=control;selector_title_count++;}
+ if(named(control,L"cancelbtn")&&complete_type_is(control,".?AVWButton@ui@wework@@")&&type_has(control,".?AVCButtonLayoutUI@DuiLib@@")){cancel_button=control;cancel_count++;}
+ if(cancel_button&&named(control,L"ww_btn_text")&&below(control,cancel_button)) {
+  const WCHAR *caption=string_data((unsigned char*)control+0x11c);
+  if(valid((void*)caption,sizeof(L"取消"))&&!memcmp(caption,L"取消",sizeof(L"取消")))cancel_caption_count++;
+ }
 
  if(named(control,L"accept_btn")) {
   if(type_has(control,".?AVCButtonUI@DuiLib@@")){answer_button=control;answer_count++;answer_kind=1;}
@@ -113,11 +133,13 @@ static BOOL view_matches(Trial *t,unsigned char *base) {
 }
 static BOOL CALLBACK visible_voice(HWND h,LPARAM flag) {
  DWORD pid=0;GetWindowThreadProcessId(h,&pid);WCHAR cls[128]={0},title[128]={0};
- if(pid==GetCurrentProcessId()&&IsWindowVisible(h)&&GetClassNameW(h,cls,128)&&!wcscmp(cls,L"WXworkWindow - 语音通话")&&GetWindowTextW(h,title,128)&&!wcscmp(title,L"语音通话"))*(BOOL*)flag=TRUE;
+ if(pid!=GetCurrentProcessId()||!IsWindowVisible(h)||!GetClassNameW(h,cls,128))return TRUE;
+ if(!wcscmp(cls,L"WXworkWindow - 语音通话")&&GetWindowTextW(h,title,128)&&!wcscmp(title,L"语音通话"))*(BOOL*)flag=TRUE;
+ if(!wcscmp(cls,L"weWorkSelectUser")&&complete_type_is((void*)(uintptr_t)GetWindowLongPtrW(h,GWLP_USERDATA),".?AVCSelectUserFrame@ui@wework@@"))*(BOOL*)flag=TRUE;
  return TRUE;
 }
 static void verify(Trial *t) {
- if((t->mode!=1&&t->mode!=2)||(t->input_kind!=0&&t->input_kind!=1&&t->input_kind!=2&&t->input_kind!=4)){t->failure=80;return;}
+ if((t->mode!=1&&t->mode!=2)||(t->input_kind!=0&&t->input_kind!=1&&t->input_kind!=2&&t->input_kind!=3&&t->input_kind!=4)){t->failure=80;return;}
  unsigned char *base=(unsigned char*)GetModuleHandleW(NULL);
  const unsigned char prologue[]={0x66,0x90,0x55,0x8b,0xec,0x6a,0xff,0x68};
  if(memcmp(base+0x5a25690,prologue,sizeof(prologue))){t->failure=81;return;}
@@ -149,7 +171,7 @@ static void verify(Trial *t) {
  address=GetProcAddress(dui,"?GetPos@CControlUI@DuiLib@@UBEABUtagRECT@@XZ");memcpy(&get_pos,&address,sizeof(address));
  unsigned char expected[]={0x8b,0x41,0x4c,0xc3};
  if(!get_manager||!get_parent||!get_paint||!get_pos||memcmp((void*)get_manager,expected,sizeof(expected))){t->failure=87;return;}
- void *ui_manager=NULL;HWND paint=NULL;
+ void *ui_manager=NULL;HWND paint=NULL;BOOL selector_window=FALSE;
  PointerGetter get_root=NULL;
  FARPROC root_fn=GetProcAddress(dui,"?GetRoot@CPaintManagerUI@DuiLib@@QBEPAVCControlUI@2@XZ");memcpy(&get_root,&root_fn,sizeof(root_fn));
  root_fn=GetProcAddress(dui,"?DUISpiderGetCount@CContainerUI@DuiLib@@QBEHXZ");memcpy(&tree_count,&root_fn,sizeof(root_fn));
@@ -180,13 +202,18 @@ static void verify(Trial *t) {
   HWND candidate=(HWND)(uintptr_t)t->height;DWORD pid=0;
   DWORD thread=GetWindowThreadProcessId(candidate,&pid);WCHAR cls[128]={0};
   void *window=(void*)(uintptr_t)GetWindowLongPtrW(candidate,GWLP_USERDATA);
-  if(pid!=t->pid||thread!=t->tid||!IsWindowVisible(candidate)||!GetClassNameW(candidate,cls,128)||(wcsncmp(cls,L"WXworkWindow",12)&&wcsncmp(cls,L"WeWorkWindow",12))||!valid(window,0x200)||!type_has(window,".?AVWindowImplBase@DuiLib@@")||*(HWND*)((unsigned char*)window+4)!=candidate){t->failure=94;return;}
+  if(pid!=t->pid||thread!=t->tid||!IsWindowVisible(candidate)||!GetClassNameW(candidate,cls,128)||!valid(window,0x200)||!type_has(window,".?AVWindowImplBase@DuiLib@@")||*(HWND*)((unsigned char*)window+4)!=candidate){t->failure=94;return;}
+  if(!wcscmp(cls,L"weWorkSelectUser")) {
+   if(!complete_type_is(window,".?AVCSelectUserFrame@ui@wework@@")||(t->mode!=1&&t->input_kind!=3)){t->failure=107;return;}
+   selector_window=TRUE;
+  } else if(wcsncmp(cls,L"WXworkWindow",12)&&wcsncmp(cls,L"WeWorkWindow",12)){t->failure=94;return;}
   ui_manager=(unsigned char*)window+0x44;
   if(!type_has(ui_manager,".?AVCPaintManagerUI@DuiLib@@")){t->failure=95;return;}
   paint=candidate;
  }
  if(!valid(ui_manager,0xa4)){t->failure=92;return;}
  tree_parent=get_parent;tree_paint=get_paint;tree_pos=get_pos;trial=t;tree_window=paint;nodes=0;used=0;complete=TRUE;hang_outer=NULL;hang_inner=NULL;outer_count=0;inner_count=0;button_kind=0;answer_button=NULL;answer_count=0;answer_kind=0;inviter_name=NULL;invite_tips=NULL;inviter_count=0;tips_count=0;reject_count=0;
+ cancel_button=NULL;selector_title=NULL;cancel_count=0;selector_title_count=0;cancel_caption_count=0;
  if(!GetClientRect(paint,&viewport)){t->failure=93;return;}
  used+=(size_t)snprintf(t->serialized,CARD_MAX,"{\"nodes\":[");
  void *root=get_root(ui_manager);walk(root,NULL,0);
@@ -197,8 +224,22 @@ static void verify(Trial *t) {
  if(used&&t->serialized[used-1]=='}') {
   used--;used+=(size_t)snprintf(t->serialized+used,CARD_MAX-used,",\"window_root\":\"%lx\",\"accept_button\":\"%lx\",\"accept_count\":%u,\"accept_kind\":%d}",(DWORD)(uintptr_t)GetWindowLongPtrW(paint,GWLP_USERDATA),(DWORD)(uintptr_t)answer_button,answer_count,answer_kind);
  }
+ if(used&&t->serialized[used-1]=='}') {
+  used--;used+=(size_t)snprintf(t->serialized+used,CARD_MAX-used,",\"cancel_button\":\"%lx\",\"cancel_count\":%u,\"cancel_caption_count\":%u}",(DWORD)(uintptr_t)cancel_button,cancel_count,cancel_caption_count);
+ }
  t->rich_size=(DWORD)used;
  if(t->mode==1){t->returned=1;return;}
+ if(t->input_kind==3) {
+  if(!selector_window||t->payload_size!=12||!complete||cancel_count!=1||cancel_caption_count!=1||selector_title_count!=1){t->failure=109;return;}
+  DWORD bound[3];memcpy(bound,t->payload,12);
+  const WCHAR *title=string_data((unsigned char*)selector_title+0x11c);
+  if(bound[0]!=(DWORD)(uintptr_t)GetWindowLongPtrW(paint,GWLP_USERDATA)||bound[1]!=(DWORD)(uintptr_t)cancel_button||bound[2]||!valid((void*)title,sizeof(L"选择联系人"))||memcmp(title,L"选择联系人",sizeof(L"选择联系人"))||tree_paint(cancel_button)!=paint||!tree_visible(cancel_button)||!named(cancel_button,L"cancelbtn")){t->failure=110;return;}
+  BooleanGetter enabled=NULL,activate=NULL;FARPROC fn=GetProcAddress(dui,"?IsEnabled@CControlUI@DuiLib@@UBE_NXZ");memcpy(&enabled,&fn,sizeof(fn));
+  fn=GetProcAddress(dui,"?Activate@CButtonLayoutUI@DuiLib@@UAE_NXZ");memcpy(&activate,&fn,sizeof(fn));
+  if(!enabled||!activate||!enabled(cancel_button)){t->failure=111;return;}
+  t->send_entered=1;unsigned char activated=activate(cancel_button);t->returned=1;
+  t->rich_size=(DWORD)snprintf(t->serialized,CARD_MAX,"{\"normal_cancel_button_returned\":true,\"activated\":%s,\"invitation_performed\":false,\"automatic_retry_allowed\":false}",activated?"true":"false");return;
+ }
  if(t->input_kind==1) {
   if(!t->height||t->payload_size!=12||!complete||answer_count!=1){t->failure=100;return;}
   DWORD expected_answer[3];memcpy(expected_answer,t->payload,12);
@@ -210,6 +251,7 @@ static void verify(Trial *t) {
   if(expected_answer[0]!=(DWORD)(uintptr_t)GetWindowLongPtrW(paint,GWLP_USERDATA)||expected_answer[1]!=(DWORD)(uintptr_t)answer_button||expected_answer[2]!=0||tree_paint(answer_button)!=paint||!named(answer_button,L"accept_btn")){t->failure=101;return;}
   BooleanGetter activate_answer=NULL;FARPROC fn=GetProcAddress(dui,answer_kind==1?"?Activate@CButtonUI@DuiLib@@UAE_NXZ":"?Activate@CButtonLayoutUI@DuiLib@@UAE_NXZ");memcpy(&activate_answer,&fn,sizeof(fn));
   if(!activate_answer){t->failure=102;return;}
+  BOOL busy=FALSE;EnumWindows(visible_voice,(LPARAM)&busy);if(busy){t->failure=108;return;}
   t->send_entered=1;unsigned char activated=activate_answer(answer_button);t->returned=1;
   t->rich_size=(DWORD)snprintf(t->serialized,CARD_MAX,"{\"normal_accept_button_returned\":true,\"activated\":%s,\"answer_button_type\":%d,\"connection_observed\":false,\"automatic_retry_allowed\":false}",activated?"true":"false",answer_kind);
   return;

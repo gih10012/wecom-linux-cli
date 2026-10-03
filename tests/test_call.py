@@ -72,6 +72,137 @@ class CallTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'COMPLETE_CALL_WINDOW'):
                 call.classify(self.prepared(), dict(kind='voice', root='20'), tree)
 
+    def selector_tree(self):
+        return dict(complete=True, node_count=25, window_root='20',
+                    cancel_count=1, cancel_caption_count=1, cancel_button='50',
+                    nodes=[dict(name='selectedtitle', text='选择联系人'),
+                           dict(name='searchedit', text=''),
+                           dict(name='conversation_name', text='test group'),
+                           dict(name='okbtn', text=''), dict(name='cancelbtn', text=''),
+                           dict(name='checkbox', text=''), dict(name='checkbox', text='')])
+
+    def test_member_selector_never_proves_a_call_or_selected_native_ids(self):
+        tree = self.selector_tree()
+        tree.update(outer_count=1, inner_count=1, accept_count=1, accept_button='30')
+        tree['nodes'] += [dict(name='titletext', text='00:08'),
+                          dict(name='middle_tips', text='已接通'),
+                          dict(name='avatar_name', text='peer'),
+                          dict(name='single_voip_tips', text='邀请你语音通话'),
+                          dict(name='inviter_name', text='peer'),
+                          dict(name='reject_btn', text='')]
+        result = call.classify(self.prepared(), dict(kind='member_selector', hwnd='10', root='20'), tree)
+        self.assertEqual(result['kind'], 'member_selector')
+        self.assertEqual(result['visible_checkbox_count'], 2)
+        for field in ('call_connection_verified', 'selector_purpose_verified',
+                      'member_identity_verified', 'selection_verified'):
+            self.assertFalse(result[field])
+        self.assertNotIn('invitation_token', result)
+
+    def selector(self):
+        return call.classify(self.prepared(), dict(kind='member_selector', hwnd='10', root='20'),
+                             self.selector_tree())
+
+    def test_cancel_token_binds_current_window_button_caption_and_account(self):
+        original = self.selector()
+        window = dict(kind='member_selector', hwnd='10', root='20')
+        changed_button = call.classify(self.prepared(), window, dict(self.selector_tree(), cancel_button='51'))
+        changed_window = call.classify(self.prepared(), dict(window, hwnd='11'), self.selector_tree())
+        changed_scope = self.prepared()
+        changed_scope['value'] = dict(changed_scope['value'], scope='other-account')
+        other_account = call.classify(changed_scope, window, self.selector_tree())
+        self.assertEqual(len({x['selector_token'] for x in [original, changed_button, changed_window, other_account]}), 4)
+        untyped = call.classify(self.prepared(), window, dict(self.selector_tree(), cancel_count=0))
+        self.assertFalse(untyped['cancel_control_verified'])
+        self.assertNotIn('selector_token', untyped)
+
+    def test_stale_selector_token_cannot_cancel_another_picker(self):
+        live = dict(self.idle(), member_selectors=[self.selector()])
+        with patch.object(call, 'context', side_effect=self.prepared), \
+             patch.object(call, 'observe', return_value=live), patch.object(call, 'dispatch') as dispatch:
+            with self.assertRaisesRegex(ValueError, 'EXACT_MEMBER_SELECTOR'):
+                call.selector_cancel('me', 'b' * 64)
+            dispatch.assert_not_called()
+
+    def test_selector_cancel_activates_only_bound_cancel_and_requires_observed_close(self):
+        import struct
+        selected = self.selector()
+        live = dict(self.idle(), member_selectors=[selected])
+        for after, closed in [(self.idle(), True), (live, False)]:
+            with patch.object(call, 'context', side_effect=self.prepared), \
+                 patch.object(call, 'observe', side_effect=[live, after]), \
+                 patch.object(call, 'desktop_session', side_effect=nullcontext), \
+                 patch.object(call, 'dispatch', return_value=({'ok': True}, {'activated': True})) as dispatch:
+                result = call.selector_cancel('me', selected['selector_token'])
+                self.assertEqual(result['ok'], closed)
+                self.assertEqual(result['selector_closed_observed'], closed)
+                self.assertFalse(result['invitation_performed'])
+                self.assertFalse(result['automatic_retry_allowed'])
+                args = dispatch.call_args.args
+                self.assertEqual(args[1:3], (2, 3))
+                self.assertEqual(args[4], struct.pack('<III', 0x20, 0x50, 0))
+                self.assertEqual(dispatch.call_count, 1)
+
+    def test_selector_cancel_timeout_never_retries_native_activation(self):
+        selected = self.selector()
+        with patch.object(call, 'context', side_effect=self.prepared), \
+             patch.object(call, 'observe', return_value=dict(self.idle(), member_selectors=[selected])), \
+             patch.object(call, 'desktop_session', side_effect=nullcontext), \
+             patch.object(call, 'dispatch', side_effect=subprocess.TimeoutExpired('hook', 30)) as dispatch:
+            with self.assertRaises(subprocess.TimeoutExpired):
+                call.selector_cancel('me', selected['selector_token'])
+            self.assertEqual(dispatch.call_count, 1)
+
+    def test_member_selector_requires_complete_bound_window_and_unique_controls(self):
+        window = dict(kind='member_selector', hwnd='10', root='20')
+        good = self.selector_tree()
+        for tree in [dict(good, complete=False), dict(good, window_root='21'),
+                     dict(good, nodes=good['nodes'][1:]),
+                     dict(good, nodes=good['nodes'] + [dict(name='cancelbtn', text='')])]:
+            with self.assertRaises(ValueError):
+                call.classify(self.prepared(), window, tree)
+
+    def test_observe_reports_member_selector_separately_from_calls(self):
+        prepared = dict(self.prepared(), resolution=dict(tid=12))
+        window = dict(kind='member_selector', hwnd='10', root='20', tid=12)
+        with patch.object(call, 'probe', return_value=[window, dict(identity_unchanged=True)]), \
+             patch.object(call, 'dispatch', return_value=({'ok': True}, self.selector_tree())):
+            result = call.observe(prepared)
+        self.assertEqual(len(result['member_selectors']), 1)
+        self.assertIsNone(result['active'])
+        self.assertEqual(result['incoming'], [])
+        self.assertFalse(result['call_connection_verified'])
+
+    def test_open_member_selector_blocks_new_start_before_journal_or_target_preparation(self):
+        live = dict(self.idle(), member_selectors=[dict(kind='member_selector')])
+        with patch.object(call, 'context', side_effect=self.prepared), \
+             patch.object(call, 'observe', return_value=live), \
+             patch.object(call, 'prepare_start') as prepare, patch.object(call, 'dispatch') as dispatch:
+            with self.assertRaisesRegex(ValueError, 'MEMBER_SELECTOR_OPEN'):
+                call.start('me', 'S:123_456', 'call-test-01')
+            prepare.assert_not_called();dispatch.assert_not_called()
+            self.assertFalse(call.journal('call-test-01').exists())
+
+    def test_open_member_selector_blocks_acceptance_and_target_preflight(self):
+        live = dict(self.idle(), member_selectors=[{}], incoming=[dict(invitation_token='a' * 64)])
+        with patch.object(call, 'context', side_effect=self.prepared), \
+             patch.object(call, 'observe', return_value=live), patch.object(call, 'warm'), \
+             patch.object(call, 'prepare_start') as prepare, patch.object(call, 'dispatch') as dispatch:
+            with self.assertRaisesRegex(ValueError, 'MEMBER_SELECTOR_OPEN'):
+                call.answer('me', 'a' * 64, 'call-test-01')
+            with self.assertRaisesRegex(ValueError, 'MEMBER_SELECTOR_OPEN'):
+                call.preflight('me', 'S:123_456')
+            prepare.assert_not_called();dispatch.assert_not_called()
+            self.assertFalse(call.journal('call-test-01').exists())
+
+    def test_resolve_does_not_hide_an_unclosed_member_selector(self):
+        self.save(self.record('invitation_unknown'))
+        live = dict(self.idle(), member_selectors=[{}])
+        with patch.object(call, 'context', side_effect=self.prepared), \
+             patch.object(call, 'observe', return_value=live):
+            with self.assertRaisesRegex(ValueError, 'STILL_HAS'):
+                call.resolve('call-test-01', True)
+        self.assertEqual(json.loads(call.journal('call-test-01').read_text())['status'], 'invitation_unknown')
+
     def test_invitation_token_binds_caption_window_button_and_account(self):
         window = dict(kind='possible_invitation', hwnd='10', root='20')
         tree = dict(complete=True, window_root='20', accept_count=1, accept_button='30',

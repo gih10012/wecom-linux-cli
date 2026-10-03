@@ -301,6 +301,7 @@ launch are reported separately from actual business/content verification.
 
 ```sh
 wecom-linux call inspect --account me
+wecom-linux call selector-cancel --account me --selector-token CURRENT_SELECTOR_TOKEN
 wecom-linux call preflight --account me --chat EXACT_PRIVATE_CHAT_ID
 wecom-linux call start --account me --chat EXACT_PRIVATE_CHAT_ID --request-id CALL_ID
 wecom-linux call answer --account me --invitation-token CURRENT_TOKEN --request-id ANSWER_ID
@@ -308,6 +309,24 @@ wecom-linux call status --request-id CALL_ID
 wecom-linux call play --request-id CALL_ID --file /path/notification.wav --audio-request-id AUDIO_ID --wait-seconds 30
 wecom-linux call hangup --request-id CALL_ID
 ```
+
+`call inspect` also reports visible, complete typed contact pickers in
+`member_selectors`. It reads the normal `CSelectUserFrame` on the verified UI
+thread, including nonvirtual control bases at nonzero offsets. A picker is
+separate from incoming and active calls: visible labels and checkbox counts
+do not verify exact member IDs, selected members, invitation submission, or
+connection. Close or cancel it normally before starting or accepting another
+call. Target preflight, start, answer and unresolved-call resolution refuse a
+pending picker. Native start/answer checks this again before activation.
+`selector-cancel` uses the current token to activate only the typed normal
+cancel button, then checks that this same picker closed. Its token binds the
+account, process creation time, window/root/cancel control and captions; stale
+or incomplete snapshots are refused. This local cancellation does not submit
+an invitation or use a call request ID. It never retries on an uncertain result;
+inspect the actual window before further actions. Ordinary installed CLI
+inspection was verified against an empty group voice picker, followed by normal
+cancellation with no change to group history. Group selection and invitation
+are still unfinished.
 
 These commands control the normal UI on the verified client UI thread. They
 require the configured official 5.0.11.6018 client, matching executable/DuiLib/owl
