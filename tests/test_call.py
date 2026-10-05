@@ -114,6 +114,77 @@ class CallTests(unittest.TestCase):
                       selector_type='CSelectUserFrame2' if creation else 'CSelectUserFrame')
         return call.classify(self.prepared(), window, tree)
 
+    def group_selector(self, chat='R:700'):
+        tree = dict(self.selector_tree(), group_binding_verified=True, bound_group_chat=chat)
+        return call.classify(self.prepared(), dict(kind='member_selector', hwnd='10', root='20'), tree)
+
+    def test_group_binding_requires_two_native_strings_and_changes_selector_token(self):
+        first, second = self.group_selector(), self.group_selector('R:701')
+        self.assertTrue(first['group_binding_verified'])
+        self.assertEqual(first['bound_group_chat'], 'R:700')
+        self.assertNotEqual(first['selector_token'], second['selector_token'])
+        self.assertFalse(first['selector_purpose_verified'])
+        for raw in ['S:123_456', 'R:１２３', 'R:', 'R:1"bad']:
+            self.assertFalse(self.group_selector(raw)['group_binding_verified'])
+
+    def group_preparation_patches(self, native):
+        selector = self.group_selector()
+        return (patch.object(call, 'context', side_effect=self.prepared),
+                patch.object(call, 'prepare_view', side_effect=lambda p: p),
+                patch.object(call, 'observe', side_effect=[self.idle(), dict(self.idle(), member_selectors=[selector])]),
+                patch.object(call, 'warm'), patch.object(call, 'desktop_session', side_effect=nullcontext),
+                patch.object(call, 'dispatch', side_effect=native))
+
+    def test_group_preparation_journals_before_entry_and_replay_never_reopens(self):
+        from contextlib import ExitStack
+        def native(p, mode, operation=0):
+            self.assertEqual(operation, 6)
+            if mode == 2:
+                value=json.loads(call.journal('call-test-01').read_text())
+                self.assertEqual(value['status'], 'group_prepare_unknown')
+                self.assertFalse(value['invitation_performed'])
+            return dict(ok=True), {}
+        with ExitStack() as stack:
+            mocks=[stack.enter_context(p) for p in self.group_preparation_patches(native)]
+            result=call.group_prepare('me','R:700','call-test-01')
+            self.assertTrue(result['ok'])
+            self.assertEqual(result['status'],'member_selector_open')
+            self.assertFalse(result['invitation_performed'])
+            self.assertTrue(call.group_prepare('me','R:700','call-test-01')['replayed'])
+            with self.assertRaisesRegex(ValueError,'PAYLOAD_CONFLICT'):
+                call.group_prepare('me','R:701','call-test-01')
+            self.assertEqual(sum(c.args[1] == 2 for c in mocks[-1].call_args_list),1)
+
+    def test_group_preparation_timeout_is_unknown_and_blocks_new_request(self):
+        from contextlib import ExitStack
+        def native(p,mode,operation=0):
+            if mode==2:raise subprocess.TimeoutExpired('hook',30)
+            return dict(ok=True),{}
+        with ExitStack() as stack:
+            [stack.enter_context(p) for p in self.group_preparation_patches(native)]
+            with self.assertRaises(subprocess.TimeoutExpired):call.group_prepare('me','R:700','call-test-01')
+        value=json.loads(call.journal('call-test-01').read_text())
+        self.assertEqual(value['status'],'group_prepare_unknown')
+        with self.assertRaisesRegex(ValueError,'OUTCOME_UNKNOWN'):call.block_unresolved(self.prepared())
+
+    def test_group_preparation_request_tracks_selector_not_active_call(self):
+        selector=self.group_selector();record=dict(self.record(),intent={'operation':'group_prepare'},
+                                                 chat_id='R:700',status='member_selector_open')
+        with patch.object(call,'observe',return_value=dict(self.idle(),member_selectors=[selector])):
+            current=call.refresh(record,self.prepared())
+        self.assertEqual(current['status'],'member_selector_open')
+        self.assertTrue(current['current_selector_matches'])
+        self.assertFalse(current['call_connection_verified'])
+        with patch.object(call,'observe',return_value=dict(self.idle(),member_selectors=[self.group_selector('R:701')])):
+            with self.assertRaisesRegex(ValueError,'SELECTOR_BINDING_CHANGED'):
+                call.refresh(record,self.prepared())
+        with patch.object(call,'observe',return_value=self.idle(self.active())):
+            closed=call.refresh(record,self.prepared())
+        self.assertEqual(closed['status'],'ended')
+        self.assertTrue(closed['selector_closed_observed'])
+        self.save(record)
+        with self.assertRaisesRegex(ValueError,'USE_SELECTOR_CANCEL'):call.hangup('call-test-01')
+
     def test_individual_metadata_does_not_convert_departments_or_unknown_formats_to_members(self):
         nodes = [dict(pointer='60', control_type='WCheckbox', self_selected=False, user_data=data)
                  for data in ['456,0,;2,0', '456,0,;0,0,0', '456', '0,0,;0,1,0',

@@ -26,7 +26,7 @@ LIBRARIES = {
     'DuiLib.dll': '78759331b2e25fbb2f66f4a8a11c8df8731df09925769c3264de77ea3cec4055',
     'owl.dll': '8d03ca36a5adc9f730f2c8750cff70c35c3391806bc3fda3591bb3244ab35b51',
 }
-UNKNOWN = {'prepared', 'invitation_unknown', 'accept_unknown', 'hangup_unknown'}
+UNKNOWN = {'prepared', 'invitation_unknown', 'accept_unknown', 'hangup_unknown', 'group_prepare_unknown'}
 
 
 def journal(request_id):
@@ -202,7 +202,12 @@ def classify(prepared, window, tree):
         # Captions and checkboxes do not bind native member IDs or prove that
         # a voice invitation was submitted. Never classify this as a call.
         members = selector_members(window_type, nodes)
+        group = tree.get('bound_group_chat')
+        group_verified = (window_type == 'CSelectUserFrame' and tree.get('group_binding_verified') is True
+                          and isinstance(group, str) and re.fullmatch(r'R:[0-9]{1,20}', group) is not None)
         result = dict(kind='member_selector', selector_type=window_type, handle=handle,
+                    bound_group_chat=group if group_verified else None,
+                    group_binding_verified=group_verified,
                     selector_caption=label('selectedtitle'),
                     conversation_caption=label('conversation_name'),
                     search_text=label('searchedit'),
@@ -219,6 +224,7 @@ def classify(prepared, window, tree):
                 isinstance(cancel, str) and re.fullmatch(r'[0-9a-fA-F]+', cancel) and int(cancel, 16)):
             descriptor = dict(handle, cancel_button=cancel, caption=label('selectedtitle'),
                               selector_type=window_type,
+                              bound_group_chat=result['bound_group_chat'],
                               conversation_caption=result['conversation_caption'],
                               account_scope=prepared['value']['scope'])
             result.update(cancel_descriptor=descriptor, selector_token=hashlib.sha256(
@@ -381,6 +387,10 @@ def preflight(name='me', chat=None):
 def prepare_start(prepared):
     if not re.fullmatch(r'S:\d+_\d+', prepared['chat']):
         raise ValueError('PRIVATE_CALL_CHAT_REQUIRED_GROUP_INVITATIONS_NOT_IMPLEMENTED')
+    return prepare_view(prepared)
+
+
+def prepare_view(prepared):
     rows = probe(prepared, prepared['chat'])
     views = [r for r in rows if r.get('exact_requested_chat_matches')]
     if len(views) != 1 or not rows[-1].get('scan_complete'):
@@ -407,6 +417,18 @@ def refresh(record, prepared):
         return dict(record, status='ended', client_process_ended=True,
                     call_connection_verified=False, read_only=True)
     live = observe(prepared)
+    if record.get('intent', {}).get('operation') == 'group_prepare':
+        selectors = [s for s in live.get('member_selectors', []) if handle_matches(record, s)]
+        if any(not s.get('group_binding_verified') or s.get('bound_group_chat') != record['chat_id']
+               for s in selectors):
+            raise ValueError('ORIGINAL_GROUP_SELECTOR_BINDING_CHANGED')
+        result = dict(record, live=live, read_only=True, call_connection_verified=False,
+                      current_selector_matches=len(selectors) == 1)
+        if len(selectors) == 1:
+            result.update(selector=selectors[0])
+        elif record.get('handle'):
+            result.update(status='ended', selector_closed_observed=True)
+        return result
     matched = handle_matches(record, live['active'])
     result = dict(record, live=live, current_call_matches=matched,
                   call_connection_verified=bool(matched and live['call_connection_verified']), read_only=True)
@@ -454,6 +476,11 @@ def block_unresolved(prepared):
             sending._persist(path, record)
             if record['status'] != 'ended':
                 raise ValueError('CALL_ALREADY_ACTIVE')
+        if record.get('status') == 'member_selector_open':
+            record = refresh(record, prepared)
+            sending._persist(path, record)
+            if record['status'] != 'ended':
+                raise ValueError('MEMBER_SELECTOR_ALREADY_OPEN')
 
 
 def replay(path, intent):
@@ -474,6 +501,64 @@ def wait_active(prepared, previous):
             return active
         time.sleep(.1)
     raise ValueError('CALL_WINDOW_NOT_OBSERVED_RESULT_UNKNOWN')
+
+
+def group_prepare(name, chat, request_id):
+    """Open the exact group's empty normal picker; never select or submit."""
+    if not re.fullmatch(r'R:[0-9]{1,20}', chat):
+        raise ValueError('EXACT_GROUP_CHAT_ID_REQUIRED')
+    intent = dict(operation='group_prepare', account=name, chat=chat)
+    with lock(), sending._lock():
+        path = journal(request_id)
+        old = replay(path, intent)
+        if old:
+            return old
+        prepared = context(name, chat)
+        before = observe(prepared)
+        require_no_selector(before)
+        block_unresolved(prepared)
+        if before['active'] or before['incoming']:
+            raise ValueError('CALL_ALREADY_ACTIVE_OR_INCOMING')
+        prepared = prepare_view(prepared)
+        warm(prepared)
+        checked, _ = dispatch(prepared, 1, operation=6)
+        if not checked.get('ok'):
+            return dict(ok=False, code='GROUP_PICKER_TARGET_PREFLIGHT_FAILED', native=checked,
+                        invitation_performed=False, automatic_retry_allowed=False)
+        record = dict(request_id=request_id, account=name, account_scope=prepared['value']['scope'],
+                      chat_id=prepared['chat'], process=prepared['before'][0], intent=intent,
+                      status='group_prepare_unknown', ok=False, created_at=time.time(),
+                      automatic_retry_allowed=False, invitation_performed=False,
+                      message_send_performed=False, call_connection_verified=False)
+        sending._persist(path, record)
+        try:
+            with desktop_session():
+                native, body = dispatch(prepared, 2, operation=6)
+            record.update(native=native, native_result=body)
+            if not native.get('ok'):
+                if native.get('state') == 2 and not native.get('native_action_entered'):
+                    record['status'] = 'failed_no_invitation'
+                return record
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline:
+                live = observe(prepared)
+                selectors = live.get('member_selectors', [])
+                if selectors:
+                    if (len(selectors) != 1 or not selectors[0].get('group_binding_verified') or
+                            selectors[0]['bound_group_chat'] != prepared['chat'] or
+                            live['active'] or live['incoming']):
+                        raise ValueError('EXACT_GROUP_PICKER_NOT_VERIFIED_RESULT_UNKNOWN')
+                    selector = selectors[0]
+                    record.update(status='member_selector_open', ok=True, handle=selector['handle'],
+                                  selector=selector, group_binding_verified=True,
+                                  normal_voice_entry_verified=True)
+                    return record
+                if live['active'] or live['incoming']:
+                    raise ValueError('UNEXPECTED_CALL_DURING_GROUP_PREPARATION')
+                time.sleep(.1)
+            raise ValueError('GROUP_PICKER_NOT_OBSERVED_RESULT_UNKNOWN')
+        finally:
+            sending._persist(path, record)
 
 
 def start(name, chat, request_id):
@@ -568,6 +653,8 @@ def hangup(request_id):
         if not path.is_file():
             raise ValueError('CALL_REQUEST_NOT_FOUND')
         record = read_private(path)
+        if record.get('intent', {}).get('operation') == 'group_prepare':
+            raise ValueError('LOCAL_GROUP_PICKER_USE_SELECTOR_CANCEL')
         if record['status'] in ('ended', 'failed_no_invitation', 'failed_no_accept'):
             return dict(record, replayed=True, read_only=True)
         if record['status'] in UNKNOWN:
@@ -684,12 +771,12 @@ def resolve(request_id, ended):
 def add_parser(sub):
     parser = sub.add_parser('call', help='Normal private voice UI; caller checks invitation/answer authorization')
     commands = parser.add_subparsers(dest='call_command', required=True)
-    for command in ('inspect', 'preflight', 'start', 'answer', 'selector-cancel', 'selector-select'):
+    for command in ('inspect', 'preflight', 'start', 'answer', 'group-prepare', 'selector-cancel', 'selector-select'):
         item = commands.add_parser(command)
         item.add_argument('--account', default='me')
-        if command in ('start', 'preflight'):
-            item.add_argument('--chat', required=command == 'start')
-        if command in ('start', 'answer'):
+        if command in ('start', 'preflight', 'group-prepare'):
+            item.add_argument('--chat', required=command != 'preflight')
+        if command in ('start', 'answer', 'group-prepare'):
             item.add_argument('--request-id', required=True)
         if command == 'answer':
             item.add_argument('--invitation-token', required=True)
@@ -719,6 +806,8 @@ def run(args):
         return preflight(args.account, args.chat)
     if args.call_command == 'start':
         return start(args.account, args.chat, args.request_id)
+    if args.call_command == 'group-prepare':
+        return group_prepare(args.account, args.chat, args.request_id)
     if args.call_command == 'answer':
         return answer(args.account, args.invitation_token, args.request_id)
     if args.call_command == 'selector-cancel':

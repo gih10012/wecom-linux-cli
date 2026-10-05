@@ -1,7 +1,7 @@
 /* Version-bound normal UI voice controls, executed on the verified owner UI thread.
  * Operations: 0 inspect/hangup, 1 answer, 2 private-call start,
  * 3 cancel an exact normal member picker, 4 local CRT warmup,
- * 5 toggle one exact local member checkbox (never submit the picker).
+ * 5 toggle one exact local member checkbox, 6 open an exact group picker.
  * No private VoIP-engine ABI, fixed coordinates, or native message submission. */
 #include "message_hook.h"
 static BOOL valid(void *address,unsigned length) {
@@ -148,6 +148,22 @@ static BOOL view_matches(Trial *t,unsigned char *base) {
  char *body=string[5]>15?(char*)(uintptr_t)string[0]:(char*)string;
  return valid(body,n+1)&&!memcmp(body,t->chat,n)&&!body[n];
 }
+static BOOL group_id(const char *value) {
+ unsigned n=(unsigned)strnlen(value,128);
+ if(n<3||n>22||value[0]!='R'||value[1]!=':')return FALSE;
+ for(unsigned i=2;i<n;i++)if(value[i]<'0'||value[i]>'9')return FALSE;
+ return TRUE;
+}
+static BOOL read_group_string(void *frame,unsigned offset,char out[128]) {
+ DWORD before[6],after[6];unsigned char *field=(unsigned char*)frame+offset;
+ if(!valid(field,sizeof(before)))return FALSE;
+ memcpy(before,field,sizeof(before));unsigned n=before[4],capacity=before[5];
+ if(n>=128||capacity<n||capacity>1048576)return FALSE;
+ const char *body=capacity==15?(const char*)field:(const char*)(uintptr_t)before[0];
+ if(capacity<15||!valid((void*)body,n+1)||body[n])return FALSE;
+ memcpy(out,body,n+1);memcpy(after,field,sizeof(after));
+ return !memcmp(before,after,sizeof(before))&&group_id(out);
+}
 static BOOL CALLBACK visible_voice(HWND h,LPARAM flag) {
  DWORD pid=0;GetWindowThreadProcessId(h,&pid);WCHAR cls[128]={0},title[128]={0};
  if(pid!=GetCurrentProcessId()||!IsWindowVisible(h)||!GetClassNameW(h,cls,128))return TRUE;
@@ -159,7 +175,7 @@ static BOOL CALLBACK visible_voice(HWND h,LPARAM flag) {
  return TRUE;
 }
 static void verify(Trial *t) {
- if((t->mode!=1&&t->mode!=2)||t->input_kind>5){t->failure=80;return;}
+ if((t->mode!=1&&t->mode!=2)||t->input_kind>6){t->failure=80;return;}
  unsigned char *base=(unsigned char*)GetModuleHandleW(NULL);
  const unsigned char prologue[]={0x66,0x90,0x55,0x8b,0xec,0x6a,0xff,0x68};
  if(memcmp(base+0x5a25690,prologue,sizeof(prologue))){t->failure=81;return;}
@@ -169,7 +185,8 @@ static void verify(Trial *t) {
  if(!valid(manager_control,12)||*(DWORD*)manager_control!=(DWORD)(uintptr_t)(base+0xba31f50)||!valid(env,0x48)||
     *(DWORD*)env!=(DWORD)(uintptr_t)(base+0xba318e4)||!account_matches(env,t->expected_self_id)){t->failure=83;return;}
  t->manager_verified=1;
- if(t->input_kind==2&&!view_matches(t,base)){t->failure=84;return;}
+ if((t->input_kind==2||t->input_kind==6)&&!view_matches(t,base)){t->failure=84;return;}
+ if(t->input_kind==6&&!group_id(t->chat)){t->failure=117;return;}
  if(t->input_kind==4) {
   if(t->mode!=1){t->failure=103;return;}
   unsigned char *owl=(unsigned char*)GetModuleHandleW(L"owl.dll");
@@ -200,7 +217,7 @@ static void verify(Trial *t) {
  root_fn=GetProcAddress(dui,"?IsVisible@CControlUI@DuiLib@@UBE_NXZ");memcpy(&tree_visible,&root_fn,sizeof(root_fn));
  unsigned char root_code[]={0x8b,0x81,0xa0,0,0,0,0xc3};unsigned char data_code[]={0x8b,0x01,0xc3};
  if(!get_root||!tree_count||!tree_item||!string_data||!tree_visible||memcmp((void*)get_root,root_code,sizeof(root_code))||memcmp((void*)string_data,data_code,sizeof(data_code))){t->failure=91;return;}
- if(t->input_kind==2) {
+ if(t->input_kind==2||t->input_kind==6) {
   unsigned char init_store[]={0x89,0xb7,0xf0,0,0,0};
   void *view=(void*)(uintptr_t)t->width;
   if(memcmp(base+0x5a3fa04,init_store,sizeof(init_store))||!valid(view,0xf4)){t->failure=89;return;}
@@ -253,6 +270,14 @@ static void verify(Trial *t) {
  }
  if(used&&t->serialized[used-1]=='}') {
   used--;used+=(size_t)snprintf(t->serialized+used,CARD_MAX-used,",\"cancel_button\":\"%lx\",\"cancel_count\":%u,\"cancel_caption_count\":%u}",(DWORD)(uintptr_t)cancel_button,cancel_count,cancel_caption_count);
+ }
+ if(selector_window&&complete_type_is((void*)(uintptr_t)GetWindowLongPtrW(paint,GWLP_USERDATA),".?AVCSelectUserFrame@ui@wework@@")) {
+  /* The version-bound constructor copies its 0x550-byte configuration to
+   * frame+0x6f8. Two independently populated strings retain the exact chat. */
+  char first[128]={0},second[128]={0};void *frame=(void*)(uintptr_t)GetWindowLongPtrW(paint,GWLP_USERDATA);
+  if(read_group_string(frame,0x7f8,first)&&read_group_string(frame,0x938,second)&&!strcmp(first,second)&&used+200<CARD_MAX&&t->serialized[used-1]=='}') {
+   used--;used+=(size_t)snprintf(t->serialized+used,CARD_MAX-used,",\"bound_group_chat\":\"%s\",\"group_binding_verified\":true}",first);
+  }
  }
  t->rich_size=(DWORD)used;
  if(t->mode==1){t->returned=1;return;}

@@ -297,10 +297,11 @@ reading, with optional origin-scoped private HTTP session state; it does not
 run a mini-program or emulate client OAuth/JS SDK APIs. HTTP success and browser
 launch are reported separately from actual business/content verification.
 
-## Private voice calls
+## Voice call controls
 
 ```sh
 wecom-linux call inspect --account me
+wecom-linux call group-prepare --account me --chat EXACT_GROUP_CHAT_ID --request-id GROUP_PREPARE_ID
 wecom-linux call selector-cancel --account me --selector-token CURRENT_SELECTOR_TOKEN
 wecom-linux call selector-select --account me --selector-token CURRENT_SELECTOR_TOKEN --member-id EXACT_NATIVE_ID --select
 wecom-linux call selector-select --account me --selector-token CURRENT_SELECTOR_TOKEN --member-id EXACT_NATIVE_ID --deselect
@@ -343,8 +344,23 @@ external contact in a group-creation picker; the checked row and selected count
 also appeared in the UI, repeated selection was read-only, a pending picker
 blocked private start before any call journal, and normal cancellation closed
 it. A real group voice picker was read without selecting or inviting its
-members. CLI opening and submission of group invitations, complete selection
-across scrolling, group connection and group audio remain unfinished.
+members. `group-prepare` opens the empty voice picker for an exact `R:ID`
+conversation through its attached normal chat view. Two independently populated
+native configuration strings must both match that exact group; captions alone
+cannot bind it. `group_binding_verified` and `bound_group_chat` report this check
+and also bind the selector token. This command selects no members and activates
+no confirmation button.
+
+The group preparation request is journaled before opening. `status` tracks the
+original picker, and same-ID replay never opens it again, including after it is
+closed. Changed targets conflict; timeout leaves `group_prepare_unknown` and
+blocks new requests until the original outcome is checked. Use `selector-cancel`
+with the current token to close the local picker, then query its request status;
+`hangup` applies to calls, not this local preparation. Installed-command
+acceptance verified exact group opening, status, cancellation, replay and
+payload conflicts without selecting a member or changing group history.
+Submission of group invitations, complete selection across scrolling, group
+connection and group audio remain unfinished.
 
 These commands control the normal UI on the verified client UI thread. They
 require the configured official 5.0.11.6018 client, matching executable/DuiLib/owl
@@ -359,7 +375,8 @@ this. The backend validates the exact conversation string, account, process
 creation time, UI thread, view type, parent and window before activating the
 normal voice handler. It has no recipient authorization whitelist. The calling
 agent checks authorization before inviting or accepting a call. Group invitation
-and member selection are not implemented by these WeCom commands.
+submission is not implemented; local picker opening and visible member selection
+use the separate commands above.
 
 `inspect` reads normal call controls without inviting or accepting. Incoming
 tokens bind the account, current process/window/root/button and full caption;
