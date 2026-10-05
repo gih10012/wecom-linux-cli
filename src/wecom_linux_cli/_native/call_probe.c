@@ -27,16 +27,22 @@ static BOOL CALLBACK window_item(HWND h,LPARAM unused) {
  (void)unused;DWORD pid=0,tid=GetWindowThreadProcessId(h,&pid);WCHAR cls[128]={0},title[128]={0};
  if(pid!=owner_pid||!IsWindowVisible(h)||(DWORD)(uintptr_t)h==main_window||!GetClassNameW(h,cls,128))return TRUE;
  BOOL voice=!wcscmp(cls,L"WXworkWindow - 语音通话")&&GetWindowTextW(h,title,128)&&!wcscmp(title,L"语音通话");
- BOOL selector=!wcscmp(cls,L"weWorkSelectUser")&&GetWindowTextW(h,title,128)&&!wcscmp(title,L"选择联系人");
+ BOOL selector=!wcscmp(cls,L"weWorkSelectUser")&&GetWindowTextW(h,title,128);
  if(!voice&&!selector&&wcscmp(cls,L"WXworkWindow"))return TRUE;
  if(!voice&&!selector&&GetWindowTextW(h,title,128))return TRUE;
  DWORD root=(DWORD)(uintptr_t)GetWindowLongPtrW(h,GWLP_USERDATA),head[2]={0},col=0,meta[5]={0};
  if(!read_bytes(owner_process,root,head,sizeof(head))||head[1]!=(DWORD)(uintptr_t)h||!read_bytes(owner_process,head[0]-4,&col,4)||!read_bytes(owner_process,col,meta,sizeof(meta))||meta[0]||meta[1]||meta[2])return TRUE;
+ const char *selector_type=NULL;
  if(selector) {
   char type[128]={0};
-  if(!read_bytes(owner_process,meta[3]+8,type,sizeof(type))||!memchr(type,0,sizeof(type))||strcmp(type,".?AVCSelectUserFrame@ui@wework@@"))return TRUE;
+  if(!read_bytes(owner_process,meta[3]+8,type,sizeof(type))||!memchr(type,0,sizeof(type)))return TRUE;
+  if(!strcmp(type,".?AVCSelectUserFrame@ui@wework@@")&&!wcscmp(title,L"选择联系人"))selector_type="CSelectUserFrame";
+  else if(!strcmp(type,".?AVCSelectUserFrame2@ui@wework@@")&&!wcscmp(title,L"发起群聊"))selector_type="CSelectUserFrame2";
+  else return TRUE;
  }
- printf("{\"kind\":\"%s\",\"hwnd\":\"%lx\",\"tid\":%lu,\"root\":\"%lx\"}\n",voice?"voice":selector?"member_selector":"possible_invitation",(DWORD)(uintptr_t)h,tid,root);
+ printf("{\"kind\":\"%s\",\"hwnd\":\"%lx\",\"tid\":%lu,\"root\":\"%lx\"",voice?"voice":selector?"member_selector":"possible_invitation",(DWORD)(uintptr_t)h,tid,root);
+ if(selector_type)printf(",\"selector_type\":\"%s\"",selector_type);
+ printf("}\n");
  return TRUE;
 }
 int wmain(int argc,wchar_t **argv) {

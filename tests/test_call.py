@@ -102,6 +102,90 @@ class CallTests(unittest.TestCase):
         return call.classify(self.prepared(), dict(kind='member_selector', hwnd='10', root='20'),
                              self.selector_tree())
 
+    def member_selector(self, selected=False, creation=False):
+        tree = self.selector_tree()
+        tree['nodes'] += [dict(name='', text='', pointer='60', control_type='WCheckbox',
+                              user_data='456,0,;0,1,0' if creation else '456',
+                              self_selected=selected)]
+        if creation:
+            tree['nodes'] = [dict(n, text='发起群聊') if n['name'] == 'selectedtitle' else n
+                             for n in tree['nodes']]
+        window = dict(kind='member_selector', hwnd='10', root='20',
+                      selector_type='CSelectUserFrame2' if creation else 'CSelectUserFrame')
+        return call.classify(self.prepared(), window, tree)
+
+    def test_individual_metadata_does_not_convert_departments_or_unknown_formats_to_members(self):
+        nodes = [dict(pointer='60', control_type='WCheckbox', self_selected=False, user_data=data)
+                 for data in ['456,0,;2,0', '456,0,;0,0,0', '456', '0,0,;0,1,0',
+                              '18446744073709551616,0,;0,1,0']]
+        self.assertEqual(call.selector_members('CSelectUserFrame2', nodes), [])
+        own = self.member_selector(True, True)
+        self.assertEqual(own['visible_members'][0]['native_id'], '456')
+        self.assertEqual(own['selected_visible_member_ids'], ['456'])
+        self.assertFalse(own['full_member_list_verified'])
+        self.assertFalse(own['selector_purpose_verified'])
+        self.assertFalse(own['selection_verified'])
+        self.assertFalse(own['call_connection_verified'])
+
+    def test_duplicate_native_member_identity_is_rejected(self):
+        node = dict(pointer='60', control_type='WCheckbox', self_selected=False, user_data='456')
+        with self.assertRaisesRegex(ValueError, 'AMBIGUOUS_MEMBER'):
+            call.selector_members('CSelectUserFrame', [node, dict(node, pointer='61')])
+
+    def test_creation_picker_token_and_title_cannot_be_interchanged_with_voice_picker(self):
+        creation = self.member_selector(creation=True)
+        self.assertNotEqual(creation['selector_token'], self.member_selector()['selector_token'])
+        tree = self.selector_tree()
+        with self.assertRaisesRegex(ValueError, 'COMPLETE_MEMBER_SELECTOR'):
+            call.classify(self.prepared(), dict(kind='member_selector', hwnd='10', root='20',
+                                               selector_type='CSelectUserFrame2'), tree)
+
+    def test_selector_selection_binds_checkbox_metadata_previous_and_desired_state(self):
+        import struct
+        for creation in (False, True):
+            selector = self.member_selector(creation=creation)
+            before = dict(self.idle(), member_selectors=[selector])
+            after = dict(self.idle(), member_selectors=[self.member_selector(True, creation)])
+            with patch.object(call, 'context', side_effect=self.prepared), \
+                 patch.object(call, 'observe', side_effect=[before, after]), \
+                 patch.object(call, 'desktop_session', side_effect=nullcontext), \
+                 patch.object(call, 'dispatch', return_value=({'ok': True}, {'activated': True})) as dispatch:
+                result = call.selector_select('me', selector['selector_token'], '456', True)
+                self.assertTrue(result['ok'])
+                self.assertTrue(result['selection_change_observed'])
+                self.assertFalse(result['invitation_performed'])
+                self.assertEqual(dispatch.call_count, 1)
+                args = dispatch.call_args.args
+                self.assertEqual(args[1:3], (2, 5))
+                data = '456,0,;0,1,0' if creation else '456'
+                self.assertEqual(args[4], struct.pack('<IIII', 0x20, 0x60, 0, 1) +
+                                 data.encode('utf-16-le') + b'\0\0')
+
+    def test_selector_selection_replay_or_missing_visible_member_never_toggles(self):
+        selector = self.member_selector(True)
+        live = dict(self.idle(), member_selectors=[selector])
+        with patch.object(call, 'context', side_effect=self.prepared), \
+             patch.object(call, 'observe', return_value=live), patch.object(call, 'dispatch') as dispatch:
+            result = call.selector_select('me', selector['selector_token'], '456', True)
+            self.assertTrue(result['read_only'])
+            with self.assertRaisesRegex(ValueError, 'ONE_VISIBLE_NATIVE_MEMBER'):
+                call.selector_select('me', selector['selector_token'], '457', False)
+            with self.assertRaisesRegex(ValueError, 'EXACT_MEMBER_SELECTOR'):
+                call.selector_select('me', 'b' * 64, '456', False)
+            dispatch.assert_not_called()
+
+    def test_checkbox_activation_without_observed_change_is_not_success_or_retried(self):
+        selector = self.member_selector()
+        live = dict(self.idle(), member_selectors=[selector])
+        with patch.object(call, 'context', side_effect=self.prepared), \
+             patch.object(call, 'observe', return_value=live), \
+             patch.object(call, 'desktop_session', side_effect=nullcontext), \
+             patch.object(call, 'dispatch', return_value=({'ok': True}, {'activated': True})) as dispatch:
+            result = call.selector_select('me', selector['selector_token'], '456', True)
+            self.assertFalse(result['ok'])
+            self.assertFalse(result['automatic_retry_allowed'])
+            self.assertEqual(dispatch.call_count, 1)
+
     def test_cancel_token_binds_current_window_button_caption_and_account(self):
         original = self.selector()
         window = dict(kind='member_selector', hwnd='10', root='20')

@@ -302,6 +302,8 @@ launch are reported separately from actual business/content verification.
 ```sh
 wecom-linux call inspect --account me
 wecom-linux call selector-cancel --account me --selector-token CURRENT_SELECTOR_TOKEN
+wecom-linux call selector-select --account me --selector-token CURRENT_SELECTOR_TOKEN --member-id EXACT_NATIVE_ID --select
+wecom-linux call selector-select --account me --selector-token CURRENT_SELECTOR_TOKEN --member-id EXACT_NATIVE_ID --deselect
 wecom-linux call preflight --account me --chat EXACT_PRIVATE_CHAT_ID
 wecom-linux call start --account me --chat EXACT_PRIVATE_CHAT_ID --request-id CALL_ID
 wecom-linux call answer --account me --invitation-token CURRENT_TOKEN --request-id ANSWER_ID
@@ -311,11 +313,17 @@ wecom-linux call hangup --request-id CALL_ID
 ```
 
 `call inspect` also reports visible, complete typed contact pickers in
-`member_selectors`. It reads the normal `CSelectUserFrame` on the verified UI
-thread, including nonvirtual control bases at nonzero offsets. A picker is
-separate from incoming and active calls: visible labels and checkbox counts
-do not verify exact member IDs, selected members, invitation submission, or
-connection. Close or cancel it normally before starting or accepting another
+`member_selectors`. It reads normal `CSelectUserFrame` contact pickers and
+`CSelectUserFrame2` group-creation pickers on the verified UI thread, including
+nonvirtual control bases at nonzero offsets. `visible_members` reports exact
+individual checkbox metadata and its own checked state, using the formal
+`GetUserData` and `IsSelfSelected` getters. Classic picker IDs were matched to
+actual group membership. In creation pickers only the verified external
+individual metadata format is exposed as a member; department metadata and
+unknown formats are excluded. These are visible rows, not a complete member
+list or the full selection after scrolling. The picker remains separate from
+incoming and active calls; neither a selected member nor its caption proves
+an invitation or connection. Close or cancel it normally before another
 call. Target preflight, start, answer and unresolved-call resolution refuse a
 pending picker. Native start/answer checks this again before activation.
 `selector-cancel` uses the current token to activate only the typed normal
@@ -323,10 +331,20 @@ cancel button, then checks that this same picker closed. Its token binds the
 account, process creation time, window/root/cancel control and captions; stale
 or incomplete snapshots are refused. This local cancellation does not submit
 an invitation or use a call request ID. It never retries on an uncertain result;
-inspect the actual window before further actions. Ordinary installed CLI
-inspection was verified against an empty group voice picker, followed by normal
-cancellation with no change to group history. Group selection and invitation
-are still unfinished.
+inspect the actual window before further actions.
+
+`selector-select` sets one exact visible individual's local checkbox. It binds
+the current account/window token, native metadata, checkbox and previous state,
+activates the normal `COptionUI` control once, and independently reads back the
+desired state. Repeating an already satisfied state is read-only. It never
+activates the confirmation button, creates a group, or submits an invitation.
+The ordinary installed CLI selected and deselected the owner's authorized
+external contact in a group-creation picker; the checked row and selected count
+also appeared in the UI, repeated selection was read-only, a pending picker
+blocked private start before any call journal, and normal cancellation closed
+it. A real group voice picker was read without selecting or inviting its
+members. CLI opening and submission of group invitations, complete selection
+across scrolling, group connection and group audio remain unfinished.
 
 These commands control the normal UI on the verified client UI thread. They
 require the configured official 5.0.11.6018 client, matching executable/DuiLib/owl

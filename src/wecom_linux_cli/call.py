@@ -154,6 +154,33 @@ def dispatch(prepared, mode, operation=0, window=None, payload=b'', caption=None
     return native, result
 
 
+def selector_members(window_type, nodes):
+    """Expose only version-verified individual checkbox metadata formats.
+
+    Creation pickers also contain departments: their metadata is not a user ID.
+    Only the external individual format has been verified for Frame2 so far.
+    """
+    members = []
+    for node in nodes:
+        if node.get('control_type') != 'WCheckbox' or type(node.get('self_selected')) is not bool:
+            continue
+        raw = node.get('user_data')
+        if not isinstance(raw, str):
+            continue
+        pattern = r'([1-9][0-9]{0,19})' if window_type == 'CSelectUserFrame' else r'([1-9][0-9]{0,19}),0,;0,1,0'
+        match = re.fullmatch(pattern, raw)
+        pointer = node.get('pointer')
+        if (not match or int(match[1]) >= 2**64 or not isinstance(pointer, str) or
+                not re.fullmatch(r'[0-9a-fA-F]{1,8}', pointer) or not int(pointer, 16)):
+            continue
+        members.append(dict(native_id=match[1], selected=node['self_selected'],
+                            checkbox=pointer, user_data=raw))
+    ids = [m['native_id'] for m in members]
+    if len(ids) != len(set(ids)):
+        raise ValueError('AMBIGUOUS_MEMBER_CHECKBOX_IDENTITY')
+    return members
+
+
 def classify(prepared, window, tree):
     if not tree or not tree.get('complete') or tree.get('window_root') != window['root']:
         raise ValueError('COMPLETE_CALL_WINDOW_SNAPSHOT_REQUIRED')
@@ -165,24 +192,33 @@ def classify(prepared, window, tree):
                   creation_filetime=prepared['probe']['creation_filetime'],
                   hwnd=window['hwnd'], root=window['root'])
     if window['kind'] == 'member_selector':
-        if (label('selectedtitle') != '选择联系人' or
+        window_type = window.get('selector_type', 'CSelectUserFrame')
+        expected_title = {'CSelectUserFrame': '选择联系人', 'CSelectUserFrame2': '发起群聊'}.get(window_type)
+        if (not expected_title or label('selectedtitle') != expected_title or
                 any(sum(n.get('name') == name for n in nodes) != 1
                     for name in ('okbtn', 'cancelbtn', 'searchedit'))):
             raise ValueError('COMPLETE_MEMBER_SELECTOR_SNAPSHOT_REQUIRED')
         # The same normal window type serves several selection workflows.
         # Captions and checkboxes do not bind native member IDs or prove that
         # a voice invitation was submitted. Never classify this as a call.
-        result = dict(kind='member_selector', handle=handle,
+        members = selector_members(window_type, nodes)
+        result = dict(kind='member_selector', selector_type=window_type, handle=handle,
+                    selector_caption=label('selectedtitle'),
                     conversation_caption=label('conversation_name'),
                     search_text=label('searchedit'),
-                    visible_checkbox_count=sum(n.get('name') == 'checkbox' for n in nodes),
+                    visible_checkbox_count=sum(n.get('control_type') == 'WCheckbox' or
+                                               n.get('name') == 'checkbox' for n in nodes),
+                    visible_members=members, visible_member_states_verified=bool(members),
+                    selected_visible_member_ids=[m['native_id'] for m in members if m['selected']],
+                    full_member_list_verified=False,
                     node_count=tree.get('node_count'), read_only=True,
-                    selector_purpose_verified=False, member_identity_verified=False,
+                    selector_purpose_verified=False, member_identity_verified=bool(members),
                     selection_verified=False, call_connection_verified=False)
         cancel = tree.get('cancel_button')
         if (tree.get('cancel_count') == tree.get('cancel_caption_count') == 1 and
                 isinstance(cancel, str) and re.fullmatch(r'[0-9a-fA-F]+', cancel) and int(cancel, 16)):
             descriptor = dict(handle, cancel_button=cancel, caption=label('selectedtitle'),
+                              selector_type=window_type,
                               conversation_caption=result['conversation_caption'],
                               account_scope=prepared['value']['scope'])
             result.update(cancel_descriptor=descriptor, selector_token=hashlib.sha256(
@@ -275,6 +311,46 @@ def selector_cancel(name, token):
                          for s in after.get('member_selectors', []))
         return dict(ok=bool(native.get('ok') and body and body.get('activated') and closed),
                     selector_closed_observed=closed,
+                    native=native, native_result=body, live=after,
+                    invitation_performed=False, message_send_performed=False,
+                    automatic_retry_allowed=False)
+
+
+def selector_select(name, token, member_id, selected):
+    """Set one current visible member checkbox; never activate OK or invite."""
+    if not re.fullmatch(r'[0-9a-f]{64}', token):
+        raise ValueError('INVALID_MEMBER_SELECTOR_TOKEN')
+    if (not re.fullmatch(r'[1-9][0-9]{0,19}', member_id) or int(member_id) >= 2**64 or
+            type(selected) is not bool):
+        raise ValueError('INVALID_MEMBER_SELECTION')
+    with lock(), sending._lock():
+        prepared = context(name)
+        live = observe(prepared)
+        selectors = [s for s in live.get('member_selectors', [])
+                     if s.get('selector_token') == token and s.get('cancel_control_verified')]
+        if len(selectors) != 1:
+            raise ValueError('EXACT_MEMBER_SELECTOR_NOT_FOUND')
+        selector = selectors[0]
+        members = [m for m in selector['visible_members'] if m['native_id'] == member_id]
+        if len(members) != 1:
+            raise ValueError('ONE_VISIBLE_NATIVE_MEMBER_CHECKBOX_REQUIRED')
+        member = members[0]
+        if member['selected'] == selected:
+            return dict(ok=True, read_only=True, already_selected_state=True,
+                        member_id=member_id, selected=selected, live=live,
+                        invitation_performed=False, automatic_retry_allowed=False)
+        descriptor = selector['cancel_descriptor']
+        payload = struct.pack('<IIII', int(descriptor['root'], 16),
+                              int(member['checkbox'], 16), int(member['selected']), int(selected))
+        payload += member['user_data'].encode('utf-16-le') + b'\0\0'
+        with desktop_session():
+            native, body = dispatch(prepared, 2, 5, descriptor, payload)
+        after = observe(prepared)
+        current = [s for s in after.get('member_selectors', []) if s['handle'] == selector['handle']]
+        observed = [m for s in current for m in s['visible_members'] if m['native_id'] == member_id]
+        verified = len(observed) == 1 and observed[0]['selected'] == selected
+        return dict(ok=bool(native.get('ok') and body and body.get('activated') and verified),
+                    member_id=member_id, selected=selected, selection_change_observed=verified,
                     native=native, native_result=body, live=after,
                     invitation_performed=False, message_send_performed=False,
                     automatic_retry_allowed=False)
@@ -608,7 +684,7 @@ def resolve(request_id, ended):
 def add_parser(sub):
     parser = sub.add_parser('call', help='Normal private voice UI; caller checks invitation/answer authorization')
     commands = parser.add_subparsers(dest='call_command', required=True)
-    for command in ('inspect', 'preflight', 'start', 'answer', 'selector-cancel'):
+    for command in ('inspect', 'preflight', 'start', 'answer', 'selector-cancel', 'selector-select'):
         item = commands.add_parser(command)
         item.add_argument('--account', default='me')
         if command in ('start', 'preflight'):
@@ -617,8 +693,13 @@ def add_parser(sub):
             item.add_argument('--request-id', required=True)
         if command == 'answer':
             item.add_argument('--invitation-token', required=True)
-        if command == 'selector-cancel':
+        if command in ('selector-cancel', 'selector-select'):
             item.add_argument('--selector-token', required=True)
+        if command == 'selector-select':
+            item.add_argument('--member-id', required=True)
+            state = item.add_mutually_exclusive_group(required=True)
+            state.add_argument('--select', action='store_true', dest='selected')
+            state.add_argument('--deselect', action='store_false', dest='selected')
     for command in ('status', 'hangup', 'resolve'):
         item = commands.add_parser(command)
         item.add_argument('--request-id', required=True)
@@ -642,6 +723,8 @@ def run(args):
         return answer(args.account, args.invitation_token, args.request_id)
     if args.call_command == 'selector-cancel':
         return selector_cancel(args.account, args.selector_token)
+    if args.call_command == 'selector-select':
+        return selector_select(args.account, args.selector_token, args.member_id, args.selected)
     if args.call_command == 'status':
         return status(args.request_id)
     if args.call_command == 'hangup':
