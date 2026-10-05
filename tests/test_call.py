@@ -116,7 +116,51 @@ class CallTests(unittest.TestCase):
 
     def group_selector(self, chat='R:700'):
         tree = dict(self.selector_tree(), group_binding_verified=True, bound_group_chat=chat)
+        tree['group_call_callback'] = dict(verified=True, object='80', chat_view='70',
+                                           response_limit=100, response_flag=False)
         return call.classify(self.prepared(), dict(kind='member_selector', hwnd='10', root='20'), tree)
+
+    def voice_origin_record(self, selector=None):
+        selector = selector or self.group_selector()
+        return dict(self.record(), intent=dict(operation='group_prepare', account='me', chat='R:700'),
+                    chat_id='R:700', chat_view='70', status='member_selector_open',
+                    normal_voice_entry_verified=True, group_call_callback=selector['group_call_callback'],
+                    voice_origin_verified=True)
+
+    def test_shared_callback_requires_original_normal_voice_entry_journal(self):
+        selector = self.group_selector()
+        self.assertTrue(selector['native_group_call_callback_verified'])
+        self.assertFalse(selector['selector_purpose_verified'])
+        record = self.voice_origin_record(selector)
+        bound = call.bind_voice_origin(record, selector)
+        self.assertTrue(bound['selector_purpose_verified'])
+        self.assertEqual(bound['voice_origin_request_id'], record['request_id'])
+        for change in (dict(normal_voice_entry_verified=False), dict(chat_view='71'),
+                       dict(status='ended'), dict(group_call_callback=None),
+                       dict(intent=dict(operation='start', account='me', chat='R:700')),
+                       dict(intent=dict(operation='group_prepare', account='other', chat='R:700')),
+                       dict(intent=dict(operation='group_prepare', account='me', chat='R:701')),
+                       dict(handle=dict(selector['handle'], root='21'))):
+            with self.subTest(change=change):
+                result = call.bind_voice_origin(dict(record, **change), selector)
+                self.assertFalse(result['selector_purpose_verified'])
+                self.assertIsNone(result['voice_origin_request_id'])
+        old = dict(record)
+        del old['group_call_callback']
+        self.assertFalse(call.bind_voice_origin(old, selector)['selector_purpose_verified'])
+
+    def test_native_callback_metadata_is_typed_and_never_proves_voice_alone(self):
+        tree = dict(self.selector_tree(), group_binding_verified=True, bound_group_chat='R:700')
+        callback = dict(verified=True, object='80', chat_view='70', response_limit=100, response_flag=False)
+        window = dict(kind='member_selector', hwnd='10', root='20')
+        for change in (dict(object='0'), dict(chat_view='xyz'), dict(response_limit=True),
+                       dict(response_limit=2**32), dict(response_flag=0)):
+            with self.subTest(change=change), self.assertRaisesRegex(ValueError, 'INVALID_NATIVE_GROUP_CALL_CALLBACK'):
+                call.classify(self.prepared(), window, dict(tree, group_call_callback=dict(callback, **change)))
+        for raw in (None, dict(callback, verified=1), dict(callback, verified=False)):
+            result = call.classify(self.prepared(), window, dict(tree, group_call_callback=raw))
+            self.assertFalse(result['native_group_call_callback_verified'])
+            self.assertFalse(result['selector_purpose_verified'])
 
     def test_group_binding_requires_two_native_strings_and_changes_selector_token(self):
         first, second = self.group_selector(), self.group_selector('R:701')
@@ -172,7 +216,7 @@ class CallTests(unittest.TestCase):
     def group_preparation_patches(self, native):
         selector = self.group_selector()
         return (patch.object(call, 'context', side_effect=self.prepared),
-                patch.object(call, 'prepare_view', side_effect=lambda p: p),
+                patch.object(call, 'prepare_view', side_effect=lambda p: dict(p, width=0x70)),
                 patch.object(call, 'observe', side_effect=[self.idle(), dict(self.idle(), member_selectors=[selector])]),
                 patch.object(call, 'warm'), patch.object(call, 'desktop_session', side_effect=nullcontext),
                 patch.object(call, 'dispatch', side_effect=native))
@@ -192,6 +236,8 @@ class CallTests(unittest.TestCase):
             self.assertTrue(result['ok'])
             self.assertEqual(result['status'],'member_selector_open')
             self.assertFalse(result['invitation_performed'])
+            self.assertTrue(result['voice_origin_verified'])
+            self.assertTrue(result['selector']['selector_purpose_verified'])
             self.assertTrue(call.group_prepare('me','R:700','call-test-01')['replayed'])
             with self.assertRaisesRegex(ValueError,'PAYLOAD_CONFLICT'):
                 call.group_prepare('me','R:701','call-test-01')
@@ -209,6 +255,20 @@ class CallTests(unittest.TestCase):
         self.assertEqual(value['status'],'group_prepare_unknown')
         with self.assertRaisesRegex(ValueError,'OUTCOME_UNKNOWN'):call.block_unresolved(self.prepared())
 
+    def test_group_preparation_unverified_callback_stays_unknown_and_is_not_reopened(self):
+        from contextlib import ExitStack
+        selector = dict(self.group_selector(), native_group_call_callback_verified=False, group_call_callback=None)
+        with ExitStack() as stack:
+            mocks = [stack.enter_context(p) for p in self.group_preparation_patches(lambda *a, **k: (dict(ok=True), {}))]
+            mocks[2].side_effect = [self.idle(), dict(self.idle(), member_selectors=[selector])]
+            with self.assertRaisesRegex(ValueError, 'EXACT_GROUP_CALL_CALLBACK_NOT_VERIFIED_RESULT_UNKNOWN'):
+                call.group_prepare('me', 'R:700', 'call-test-01')
+            replay = call.group_prepare('me', 'R:700', 'call-test-01')
+        self.assertEqual(replay['status'], 'group_prepare_unknown')
+        self.assertTrue(replay['read_only'])
+        self.assertFalse(replay['invitation_performed'])
+        self.assertEqual(sum(c.args[1] == 2 for c in mocks[-1].call_args_list), 1)
+
     def test_group_preparation_request_tracks_selector_not_active_call(self):
         selector=self.group_selector();record=dict(self.record(),intent={'operation':'group_prepare'},
                                                  chat_id='R:700',status='member_selector_open')
@@ -217,6 +277,7 @@ class CallTests(unittest.TestCase):
         self.assertEqual(current['status'],'member_selector_open')
         self.assertTrue(current['current_selector_matches'])
         self.assertFalse(current['call_connection_verified'])
+        self.assertFalse(current['voice_origin_verified'])
         with patch.object(call,'observe',return_value=dict(self.idle(),member_selectors=[self.group_selector('R:701')])):
             with self.assertRaisesRegex(ValueError,'SELECTOR_BINDING_CHANGED'):
                 call.refresh(record,self.prepared())
@@ -226,6 +287,28 @@ class CallTests(unittest.TestCase):
         self.assertTrue(closed['selector_closed_observed'])
         self.save(record)
         with self.assertRaisesRegex(ValueError,'USE_SELECTOR_CANCEL'):call.hangup('call-test-01')
+
+    def test_original_group_voice_callback_change_is_rejected_and_close_clears_live_origin(self):
+        selector = self.group_selector()
+        record = self.voice_origin_record(selector)
+        for callback in (None, dict(selector['group_call_callback'], object='81'),
+                         dict(selector['group_call_callback'], chat_view='71'),
+                         dict(selector['group_call_callback'], response_limit=0),
+                         dict(selector['group_call_callback'], response_flag=True)):
+            changed = dict(selector, group_call_callback=callback)
+            with self.subTest(callback=callback), patch.object(call, 'observe', return_value=dict(self.idle(), member_selectors=[changed])):
+                with self.assertRaisesRegex(ValueError, 'ORIGINAL_GROUP_VOICE_ORIGIN_CHANGED'):
+                    call.refresh(record, self.prepared())
+        with patch.object(call, 'observe', return_value=self.idle()):
+            closed = call.refresh(record, self.prepared())
+        self.assertEqual(closed['status'], 'ended')
+        self.assertFalse(closed['voice_origin_verified'])
+        self.save(record)
+        with patch.object(call, 'process_alive', return_value=False), patch.object(call, 'context') as context:
+            ended = call.status(record['request_id'])
+        self.assertFalse(ended['voice_origin_verified'])
+        self.assertEqual(ended['status'], 'ended')
+        context.assert_not_called()
 
     def test_individual_metadata_does_not_convert_departments_or_unknown_formats_to_members(self):
         nodes = [dict(pointer='60', control_type='WCheckbox', self_selected=False, user_data=data)

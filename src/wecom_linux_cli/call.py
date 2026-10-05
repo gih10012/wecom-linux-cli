@@ -237,6 +237,18 @@ def classify(prepared, window, tree):
         else:
             result.update(native_selected_member_ids=None, native_selected_member_count=None,
                           native_selected_member_model_verified=False)
+        callback = tree.get('group_call_callback')
+        callback_verified = group_verified and isinstance(callback, dict) and callback.get('verified') is True
+        if callback_verified:
+            if (any(not isinstance(callback.get(k), str) or not re.fullmatch(r'[0-9a-fA-F]{1,8}', callback[k])
+                    or not int(callback[k], 16) for k in ('object', 'chat_view')) or
+                    type(callback.get('response_limit')) is not int or not 0 <= callback['response_limit'] < 2**32 or
+                    type(callback.get('response_flag')) is not bool):
+                raise ValueError('INVALID_NATIVE_GROUP_CALL_CALLBACK')
+            callback = {k: callback[k] for k in ('object', 'chat_view', 'response_limit', 'response_flag')}
+        else:
+            callback = None
+        result.update(native_group_call_callback_verified=bool(callback_verified), group_call_callback=callback)
         cancel = tree.get('cancel_button')
         if (tree.get('cancel_count') == tree.get('cancel_caption_count') == 1 and
                 isinstance(cancel, str) and re.fullmatch(r'[0-9a-fA-F]+', cancel) and int(cancel, 16)):
@@ -426,6 +438,32 @@ def require_no_selector(live):
         raise ValueError('MEMBER_SELECTOR_OPEN_CLOSE_OR_CANCEL_BEFORE_CALL')
 
 
+def bind_voice_origin(record, selector):
+    """A shared group-call predicate alone cannot distinguish voice/video.
+
+    Only the journaled normal voice opening and its captured exact chat view
+    can establish this picker's origin. Old records lacking that evidence do
+    not gain a voice-purpose claim from an unrelated current window.
+    """
+    intent = record.get('intent', {})
+    callback = selector.get('group_call_callback')
+    verified = (record.get('status') == 'member_selector_open' and
+                record.get('normal_voice_entry_verified') is True and
+                intent.get('operation') == 'group_prepare' and
+                intent.get('account') == record.get('account') and
+                intent.get('chat') == record.get('chat_id') and
+                record.get('chat_id') == selector.get('bound_group_chat') and
+                selector.get('group_binding_verified') is True and
+                handle_matches(record, selector) and
+                selector.get('native_group_call_callback_verified') is True and
+                isinstance(record.get('group_call_callback'), dict) and
+                isinstance(callback, dict) and
+                record['group_call_callback'] == callback and
+                record.get('chat_view') == callback.get('chat_view'))
+    return dict(selector, selector_purpose_verified=verified,
+                voice_origin_request_id=record['request_id'] if verified else None)
+
+
 def refresh(record, prepared):
     if prepared['value']['scope'] != record['account_scope']:
         raise ValueError('CALL_ACCOUNT_CHANGED')
@@ -433,6 +471,7 @@ def refresh(record, prepared):
         if process_alive(record):
             raise ValueError('ORIGINAL_CALL_CLIENT_STILL_RUNNING')
         return dict(record, status='ended', client_process_ended=True,
+                    **({'voice_origin_verified': False} if 'voice_origin_verified' in record else {}),
                     call_connection_verified=False, read_only=True)
     live = observe(prepared)
     if record.get('intent', {}).get('operation') == 'group_prepare':
@@ -443,9 +482,12 @@ def refresh(record, prepared):
         result = dict(record, live=live, read_only=True, call_connection_verified=False,
                       current_selector_matches=len(selectors) == 1)
         if len(selectors) == 1:
-            result.update(selector=selectors[0])
+            selector = bind_voice_origin(record, selectors[0])
+            if record.get('voice_origin_verified') and not selector['selector_purpose_verified']:
+                raise ValueError('ORIGINAL_GROUP_VOICE_ORIGIN_CHANGED')
+            result.update(selector=selector, voice_origin_verified=selector['selector_purpose_verified'])
         elif record.get('handle'):
-            result.update(status='ended', selector_closed_observed=True)
+            result.update(status='ended', selector_closed_observed=True, voice_origin_verified=False)
         return result
     matched = handle_matches(record, live['active'])
     result = dict(record, live=live, current_call_matches=matched,
@@ -474,6 +516,8 @@ def status(request_id):
             return dict(record, read_only=True)
         if not process_alive(record):
             record.update(status='ended', client_process_ended=True, call_connection_verified=False)
+            if 'voice_origin_verified' in record:
+                record['voice_origin_verified'] = False
             sending._persist(path, record)
             return dict(record, read_only=True)
         prepared = context(record['account'])
@@ -545,6 +589,7 @@ def group_prepare(name, chat, request_id):
                         invitation_performed=False, automatic_retry_allowed=False)
         record = dict(request_id=request_id, account=name, account_scope=prepared['value']['scope'],
                       chat_id=prepared['chat'], process=prepared['before'][0], intent=intent,
+                      chat_view=format(prepared['width'], 'x'),
                       status='group_prepare_unknown', ok=False, created_at=time.time(),
                       automatic_retry_allowed=False, invitation_performed=False,
                       message_send_performed=False, call_connection_verified=False)
@@ -567,9 +612,14 @@ def group_prepare(name, chat, request_id):
                             live['active'] or live['incoming']):
                         raise ValueError('EXACT_GROUP_PICKER_NOT_VERIFIED_RESULT_UNKNOWN')
                     selector = selectors[0]
+                    if (not selector.get('native_group_call_callback_verified') or
+                            selector['group_call_callback']['chat_view'] != record['chat_view']):
+                        raise ValueError('EXACT_GROUP_CALL_CALLBACK_NOT_VERIFIED_RESULT_UNKNOWN')
                     record.update(status='member_selector_open', ok=True, handle=selector['handle'],
                                   selector=selector, group_binding_verified=True,
-                                  normal_voice_entry_verified=True)
+                                  normal_voice_entry_verified=True, group_call_callback=selector['group_call_callback'])
+                    record['selector'] = bind_voice_origin(record, selector)
+                    record['voice_origin_verified'] = record['selector']['selector_purpose_verified']
                     return record
                 if live['active'] or live['incoming']:
                     raise ValueError('UNEXPECTED_CALL_DURING_GROUP_PREPARATION')

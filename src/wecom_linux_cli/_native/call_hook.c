@@ -144,14 +144,36 @@ static BOOL account_matches(unsigned char *env,ULONGLONG expected) {
  b=*(unsigned char**)(a+8);if(!valid(b,8))return FALSE;
  c=*(unsigned char**)(b+4);return valid(c,0x78)&&*(ULONGLONG*)(c+0x70)==expected;
 }
-static BOOL view_matches(Trial *t,unsigned char *base) {
- DWORD *view=(DWORD*)(uintptr_t)t->width;
+static BOOL exact_view_matches(DWORD address,const char *chat,unsigned char *base) {
+ DWORD *view=(DWORD*)(uintptr_t)address;
  if(!valid(view,48)||view[0]!=(DWORD)(uintptr_t)(base+0xb547fd0)||view[4]!=(DWORD)(uintptr_t)(base+0xb547fe0))return FALSE;
  DWORD *ctx=(DWORD*)(uintptr_t)view[2];if(!valid(ctx,12))return FALSE;
  DWORD *string=(DWORD*)(uintptr_t)ctx[1];if(!valid(string,24))return FALSE;
- unsigned n=(unsigned)strnlen(t->chat,256);if(!n||n>=256||string[4]!=n||string[5]<n||string[5]>1048576)return FALSE;
+ unsigned n=(unsigned)strnlen(chat,256);if(!n||n>=256||string[4]!=n||string[5]<n||string[5]>1048576)return FALSE;
  char *body=string[5]>15?(char*)(uintptr_t)string[0]:(char*)string;
- return valid(body,n+1)&&!memcmp(body,t->chat,n)&&!body[n];
+ return valid(body,n+1)&&!memcmp(body,chat,n)&&!body[n];
+}
+static BOOL view_matches(Trial *t,unsigned char *base) {
+ return exact_view_matches(t->width,t->chat,base);
+}
+static BOOL group_callback(void *frame,unsigned char *base,const char *chat,DWORD *object,DWORD capture[4]) {
+ /* This predicate is shared by voice/video. Its int/bool are meeting
+  * capability response arguments, not an audio-mode discriminator. */
+ static const char wanted[]=".?AV?$_Func_impl_no_alloc@V<lambda_3>@?BL@???R<lambda_1>@?1??ShowVideoWnd@IMChatSendMessageView@ui@wework@@IAEXABUShowVideoWindowOption@456@@Z@QBE@H_N@Z@_NAAVCSelectUserFrame@56@@std@@";
+ unsigned char *field=(unsigned char*)frame+0x5e4;
+ if(!valid(field,4))return FALSE;
+ DWORD address=*(DWORD*)field;DWORD *closure=(DWORD*)(uintptr_t)address;
+ if(!valid(closure,16))return FALSE;
+ memcpy(capture,closure,16);
+ DWORD *vt=(DWORD*)(uintptr_t)capture[0];
+ if(vt!=(DWORD*)(base+0xb54d610)||!valid(vt-1,16)||vt[0]!=(DWORD)(uintptr_t)(base+0x5a72b80)||
+    vt[1]!=vt[0]||vt[2]!=(DWORD)(uintptr_t)(base+0x5a79ea0))return FALSE;
+ DWORD *col=(DWORD*)(uintptr_t)vt[-1];
+ if(!valid(col,20)||col[0]||col[1]||col[2]||!valid((void*)(uintptr_t)(col[3]+8),sizeof(wanted))||
+    memcmp((void*)(uintptr_t)(col[3]+8),wanted,sizeof(wanted))||(capture[3]&255)>1||
+    !exact_view_matches(capture[1],chat,base))return FALSE;
+ if(*(DWORD*)field!=address||memcmp(closure,capture,16))return FALSE;
+ *object=address;return TRUE;
 }
 static BOOL group_id(const char *value) {
  unsigned n=(unsigned)strnlen(value,128);
@@ -280,8 +302,13 @@ static void verify(Trial *t) {
   /* The version-bound constructor copies its 0x550-byte configuration to
    * frame+0x6f8. Two independently populated strings retain the exact chat. */
   char first[128]={0},second[128]={0};void *frame=(void*)(uintptr_t)GetWindowLongPtrW(paint,GWLP_USERDATA);
-  if(read_group_string(frame,0x7f8,first)&&read_group_string(frame,0x938,second)&&!strcmp(first,second)&&used+200<CARD_MAX&&t->serialized[used-1]=='}') {
+  BOOL bound_group=read_group_string(frame,0x7f8,first)&&read_group_string(frame,0x938,second)&&!strcmp(first,second);
+  if(bound_group&&used+200<CARD_MAX&&t->serialized[used-1]=='}') {
    used--;used+=(size_t)snprintf(t->serialized+used,CARD_MAX-used,",\"bound_group_chat\":\"%s\",\"group_binding_verified\":true}",first);
+  }
+  DWORD callback=0,capture[4]={0};
+  if(bound_group&&group_callback(frame,base,first,&callback,capture)&&used+350<CARD_MAX&&t->serialized[used-1]=='}') {
+   used--;used+=(size_t)snprintf(t->serialized+used,CARD_MAX-used,",\"group_call_callback\":{\"verified\":true,\"object\":\"%lx\",\"chat_view\":\"%lx\",\"response_limit\":%lu,\"response_flag\":%s}}",callback,capture[1],capture[2],capture[3]&255?"true":"false");
   }
   /* This is a snapshot of the final getter's version-bound input vectors,
    * not a call to that getter, a confirmation action, or proof of voice use. */

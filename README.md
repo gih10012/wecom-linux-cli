@@ -371,6 +371,25 @@ with the current token to close the local picker, then query its request status;
 `hangup` applies to calls, not this local preparation. Installed-command
 acceptance verified exact group opening, status, cancellation, replay and
 payload conflicts without selecting a member or changing group history.
+
+The native snapshot also checks the group-call predicate's exact RTTI,
+vtable, captured chat view and stable capability-response arguments. This
+predicate is shared by voice and video: `native_group_call_callback_verified`
+alone never establishes voice purpose. Only `group-prepare` and its `status`
+bind that snapshot to the journaled normal voice opening, exact group, original
+chat view and same process/window/callback. They report `voice_origin_verified`
+and a selector with `selector_purpose_verified=true` when those checks pass.
+Generic `inspect` keeps the purpose false; old records without this provenance
+do not acquire it. A changed callback is rejected, and closing the original
+picker clears the live `voice_origin_verified` field. The stored selector is
+the last snapshot, not evidence that a closed picker remains open.
+
+Installed-command acceptance verified an empty original voice picker, normal
+cancellation, open/ended status, read-only replay and unchanged group history.
+A separate empty add-group-members picker of the same native class lacked
+the call predicate and was not identified as a voice picker. No members were
+selected or invited in either test.
+
 Submission of group invitations, complete selection across scrolling, group
 connection and group audio remain unfinished.
 
