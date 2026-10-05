@@ -302,6 +302,7 @@ launch are reported separately from actual business/content verification.
 ```sh
 wecom-linux call inspect --account me
 wecom-linux call group-prepare --account me --chat EXACT_GROUP_CHAT_ID --request-id GROUP_PREPARE_ID
+wecom-linux call group-invite --prepare-request-id GROUP_PREPARE_ID --member-id EXACT_NATIVE_ID --request-id GROUP_SUBMISSION_ID
 wecom-linux call selector-cancel --account me --selector-token CURRENT_SELECTOR_TOKEN
 wecom-linux call selector-select --account me --selector-token CURRENT_SELECTOR_TOKEN --member-id EXACT_NATIVE_ID --select
 wecom-linux call selector-select --account me --selector-token CURRENT_SELECTOR_TOKEN --member-id EXACT_NATIVE_ID --deselect
@@ -323,8 +324,11 @@ actual group membership. In creation pickers only the verified external
 individual metadata format is exposed as a member; department metadata and
 unknown formats are excluded. These are visible rows, not a complete member
 list. A classic picker additionally reports `native_selected_member_ids` and
-`native_selected_member_count` from both version-bound input vectors used by
-the client's final selection getter. This read runs on the verified UI thread,
+`native_selected_member_count` from the live typed `BuddyList` selected vector
+and the additional UID vector. The frame's finalized result vector is populated
+only on confirmation and is not a pre-submission selected list. The live model
+checks the frame/common-view/buddy-list/delegate links, refuses a nonempty
+nonindividual vector, and reads on the verified UI thread. It
 checks bounds, individual row kinds, unique identities, and unchanged vector
 and member fields, and merges additional IDs with the client's deduplication
 semantics. It also requires agreement with visible checkbox states. An
@@ -383,6 +387,24 @@ Generic `inspect` keeps the purpose false; old records without this provenance
 do not acquire it. A changed callback is rejected, and closing the original
 picker clears the live `voice_origin_verified` field. The stored selector is
 the last snapshot, not evidence that a closed picker remains open.
+
+`group-invite` confirms an original `group-prepare` picker once. Repeat
+`--member-id` for every expected selected individual; the entire live model
+must equal that nonempty, unique set, including off-screen selections. The
+normal confirmation control is bound to the typed common view and original
+group-call callback. Both native preflight and activation recheck the full
+set, process/account/window, callback and control before entry. The submission
+journal and preparation's submission ID are saved before activation. Same-ID
+replay never repeats it; changed content conflicts, and another ID cannot
+confirm the same preparation again.
+
+This command's real nonempty group submission acceptance is pending. A normal
+button return or picker closure leaves `group_submission_unknown` and
+`invitation_performed=null`; it does not prove an invitation, group connection
+or remote audio. Query `status` and inspect the actual client; resolve the
+original outcome before any retry or GUI submission. A failure definitely
+before native entry reports `failed_no_invitation`. Installed empty-model
+refusal validates guards only, not successful submission.
 
 Installed-command acceptance verified an empty original voice picker, normal
 cancellation, open/ended status, read-only replay and unchanged group history.

@@ -127,6 +127,112 @@ class CallTests(unittest.TestCase):
                     normal_voice_entry_verified=True, group_call_callback=selector['group_call_callback'],
                     voice_origin_verified=True)
 
+    def submission_selector(self, ids=None):
+        return dict(self.group_selector(), native_selected_member_model_verified=True,
+                    native_selected_member_ids=ids if ids is not None else ['456', '789'],
+                    native_confirmation_control_verified=True,
+                    confirmation_descriptor=dict(self.active()['handle'], ok_button='91',
+                                                 common_view='92', buddy_list='93', ok_enabled=True))
+
+    def test_group_submission_requires_the_entire_live_set_including_offscreen_members(self):
+        selector = self.submission_selector()
+        self.save(self.voice_origin_record(selector))
+        live = dict(self.idle(), member_selectors=[selector])
+        with patch.object(call, 'context', return_value=self.prepared()), patch.object(call, 'observe', return_value=live), patch.object(call, 'dispatch') as dispatch:
+            for ids in (['456'], ['456', '789', '999'], ['456', '456'], [], ['0'], ['18446744073709551616']):
+                with self.subTest(ids=ids), self.assertRaises(ValueError):
+                    call.group_invite('call-test-01', ids, 'call-test-02')
+                self.assertFalse(call.journal('call-test-02').exists())
+            dispatch.assert_not_called()
+
+    def test_group_submission_rejects_old_model_source_and_ambiguous_confirmation_context(self):
+        tree = dict(self.selector_tree(), selected_member_model=dict(
+            verified=True, source='classic_final_selection_vectors', ids=[], count=0,
+            object_count=0, additional_count=0))
+        window = dict(kind='member_selector', hwnd='10', root='20')
+        with self.assertRaisesRegex(ValueError, 'INVALID_NATIVE_SELECTED_MEMBER_MODEL'):
+            call.classify(self.prepared(), window, tree)
+        tree['selected_member_model']['source'] = 'classic_live_buddy_selection'
+        tree['selection_context'] = dict(verified=True, common_view='92', buddy_list='93', ok_button='91', ok_enabled=False)
+        result = call.classify(self.prepared(), window, tree)
+        self.assertTrue(result['native_confirmation_control_verified'])
+        self.assertFalse(result['confirmation_descriptor']['ok_enabled'])
+        for change in (dict(common_view='0'), dict(buddy_list=93), dict(ok_button='unknown'), dict(ok_enabled=1)):
+            with self.subTest(change=change), self.assertRaisesRegex(ValueError, 'INVALID_NATIVE_SELECTION_CONTEXT'):
+                call.classify(self.prepared(), window, dict(tree, selection_context=dict(tree['selection_context'], **change)))
+
+    def test_group_submission_requires_original_voice_origin_and_enabled_confirmation(self):
+        selector = self.submission_selector()
+        for changed in (dict(selector, native_confirmation_control_verified=False),
+                        dict(selector, confirmation_descriptor=dict(selector['confirmation_descriptor'], ok_enabled=False)),
+                        dict(selector, native_selected_member_model_verified=False),
+                        dict(selector, group_call_callback=dict(selector['group_call_callback'], object='81'))):
+            self.save(self.voice_origin_record(selector))
+            with self.subTest(changed=changed), patch.object(call, 'context', return_value=self.prepared()), patch.object(call, 'observe', return_value=dict(self.idle(), member_selectors=[changed])), patch.object(call, 'dispatch') as dispatch:
+                with self.assertRaises(ValueError):
+                    call.group_invite('call-test-01', ['456', '789'], 'call-test-02')
+                dispatch.assert_not_called()
+        self.save(dict(self.voice_origin_record(selector), normal_voice_entry_verified=False))
+        with patch.object(call, 'context', return_value=self.prepared()), patch.object(call, 'observe', return_value=dict(self.idle(), member_selectors=[selector])), patch.object(call, 'dispatch') as dispatch:
+            with self.assertRaises(ValueError):
+                call.group_invite('call-test-01', ['456', '789'], 'call-test-02')
+            dispatch.assert_not_called()
+
+    def test_group_submission_is_durable_before_entry_and_button_return_never_proves_invitation(self):
+        selector = self.submission_selector()
+        self.save(self.voice_origin_record(selector))
+        before = dict(self.idle(), member_selectors=[selector])
+        calls = []
+        def dispatch(prepared, mode, operation, window, payload):
+            self.assertEqual(operation, 7)
+            calls.append(mode)
+            if mode == 1:
+                self.assertFalse(call.journal('call-test-02').exists())
+                return dict(ok=True), dict(group_submit_guard_verified=True)
+            record = call.read_private(call.journal('call-test-02'))
+            self.assertEqual(record['status'], 'group_submission_unknown')
+            self.assertEqual(call.read_private(call.journal('call-test-01'))['submission_request_id'], 'call-test-02')
+            self.assertEqual(record['expected_member_ids'], ['456', '789'])
+            return dict(ok=True, state=2, native_action_entered=True), dict(activated=True)
+        with patch.object(call, 'context', return_value=self.prepared()), patch.object(call, 'observe', side_effect=[before, dict(self.idle(), member_selectors=[])]), patch.object(call, 'dispatch', side_effect=dispatch), patch.object(call, 'desktop_session', return_value=nullcontext()):
+            result = call.group_invite('call-test-01', ['789', '456'], 'call-test-02')
+        self.assertEqual(calls, [1, 2])
+        self.assertEqual(result['status'], 'group_submission_unknown')
+        self.assertIsNone(result['invitation_performed'])
+        self.assertFalse(result['call_connection_verified'])
+        self.assertFalse(result['original_selector_open'])
+        with patch.object(call, 'context') as context, patch.object(call, 'dispatch') as dispatch:
+            self.assertTrue(call.group_invite('call-test-01', ['456', '789'], 'call-test-02')['replayed'])
+            with self.assertRaisesRegex(ValueError, 'PAYLOAD_CONFLICT'):
+                call.group_invite('call-test-01', ['456'], 'call-test-02')
+            with self.assertRaisesRegex(ValueError, 'ALREADY_SUBMITTED'):
+                call.group_invite('call-test-01', ['456', '789'], 'call-test-03')
+            context.assert_not_called()
+            dispatch.assert_not_called()
+
+    def test_group_submission_preflight_failure_makes_no_journal_and_timeout_stays_unknown(self):
+        selector = self.submission_selector()
+        self.save(self.voice_origin_record(selector))
+        live = dict(self.idle(), member_selectors=[selector])
+        with patch.object(call, 'context', return_value=self.prepared()), patch.object(call, 'observe', return_value=live), patch.object(call, 'dispatch', return_value=(dict(ok=False, failure=119), None)):
+            result = call.group_invite('call-test-01', ['456', '789'], 'call-test-02')
+        self.assertFalse(result['invitation_performed'])
+        self.assertFalse(call.journal('call-test-02').exists())
+        with patch.object(call, 'context', return_value=self.prepared()), patch.object(call, 'observe', return_value=live), patch.object(call, 'dispatch', side_effect=[(dict(ok=True), dict(group_submit_guard_verified=True)), subprocess.TimeoutExpired('dispatch', 5)]), patch.object(call, 'desktop_session', return_value=nullcontext()):
+            with self.assertRaises(subprocess.TimeoutExpired):
+                call.group_invite('call-test-01', ['456', '789'], 'call-test-02')
+        self.assertEqual(call.read_private(call.journal('call-test-02'))['status'], 'group_submission_unknown')
+        self.assertEqual(call.read_private(call.journal('call-test-01'))['submission_request_id'], 'call-test-02')
+
+    def test_group_submission_status_preserves_unknown_when_picker_has_closed(self):
+        record = dict(self.record('group_submission_unknown'), intent={'operation': 'group_invite'},
+                      selector_handle=self.active()['handle'], invitation_performed=None)
+        with patch.object(call, 'observe', return_value=dict(self.idle(), member_selectors=[])):
+            result = call.refresh(record, self.prepared())
+        self.assertEqual(result['status'], 'group_submission_unknown')
+        self.assertIsNone(result['invitation_performed'])
+        self.assertFalse(result['call_connection_verified'])
+
     def test_shared_callback_requires_original_normal_voice_entry_journal(self):
         selector = self.group_selector()
         self.assertTrue(selector['native_group_call_callback_verified'])
@@ -174,7 +280,7 @@ class CallTests(unittest.TestCase):
     def test_native_selected_model_includes_offscreen_ids_without_proving_invitation(self):
         tree = self.selector_tree()
         tree['nodes'] += [dict(pointer='60', control_type='WCheckbox', user_data='456', self_selected=True)]
-        tree['selected_member_model'] = dict(verified=True, source='classic_final_selection_vectors',
+        tree['selected_member_model'] = dict(verified=True, source='classic_live_buddy_selection',
                                             ids=['456', '789'], count=2, object_count=2, additional_count=0)
         result = call.classify(self.prepared(), dict(kind='member_selector', hwnd='10', root='20'), tree)
         self.assertEqual(result['selected_visible_member_ids'], ['456'])
@@ -182,7 +288,7 @@ class CallTests(unittest.TestCase):
         self.assertTrue(result['native_selected_member_model_verified'])
         for field in ('selection_verified', 'selector_purpose_verified', 'call_connection_verified'):
             self.assertFalse(result[field])
-        empty = dict(verified=True, source='classic_final_selection_vectors', ids=[], count=0,
+        empty = dict(verified=True, source='classic_live_buddy_selection', ids=[], count=0,
                      object_count=0, additional_count=0)
         result = call.classify(self.prepared(), dict(kind='member_selector', hwnd='10', root='20'),
                                dict(self.selector_tree(), selected_member_model=empty))
@@ -198,7 +304,7 @@ class CallTests(unittest.TestCase):
     def test_native_model_disagreement_invalid_ids_and_unknown_layout_are_not_trusted(self):
         tree = self.selector_tree()
         tree['nodes'] += [dict(pointer='60', control_type='WCheckbox', user_data='456', self_selected=False)]
-        model = dict(verified=True, source='classic_final_selection_vectors', ids=['456'], count=1,
+        model = dict(verified=True, source='classic_live_buddy_selection', ids=['456'], count=1,
                      object_count=1, additional_count=0)
         window = dict(kind='member_selector', hwnd='10', root='20')
         with self.assertRaisesRegex(ValueError, 'DISAGREES_WITH_VISIBLE'):

@@ -26,7 +26,8 @@ LIBRARIES = {
     'DuiLib.dll': '78759331b2e25fbb2f66f4a8a11c8df8731df09925769c3264de77ea3cec4055',
     'owl.dll': '8d03ca36a5adc9f730f2c8750cff70c35c3391806bc3fda3591bb3244ab35b51',
 }
-UNKNOWN = {'prepared', 'invitation_unknown', 'accept_unknown', 'hangup_unknown', 'group_prepare_unknown'}
+UNKNOWN = {'prepared', 'invitation_unknown', 'accept_unknown', 'hangup_unknown', 'group_prepare_unknown',
+           'group_submission_unknown'}
 
 
 def journal(request_id):
@@ -223,7 +224,7 @@ def classify(prepared, window, tree):
         if window_type == 'CSelectUserFrame' and isinstance(model, dict) and model.get('verified') is True:
             ids = model.get('ids')
             counts = [model.get(k) for k in ('count', 'object_count', 'additional_count')]
-            if (model.get('source') != 'classic_final_selection_vectors' or not isinstance(ids, list) or
+            if (model.get('source') != 'classic_live_buddy_selection' or not isinstance(ids, list) or
                     any(type(c) is not int or not 0 <= c <= 256 for c in counts) or counts[0] != len(ids) or
                     not counts[1] <= counts[0] <= counts[1] + counts[2] or
                     any(not isinstance(uid, str) or not re.fullmatch(r'[1-9][0-9]{0,19}', uid) or
@@ -249,6 +250,22 @@ def classify(prepared, window, tree):
         else:
             callback = None
         result.update(native_group_call_callback_verified=bool(callback_verified), group_call_callback=callback)
+        selection_context = tree.get('selection_context')
+        confirmation_verified = (window_type == 'CSelectUserFrame' and
+                                 result['native_selected_member_model_verified'] and
+                                 isinstance(selection_context, dict) and
+                                 selection_context.get('verified') is True)
+        if confirmation_verified:
+            if (any(not isinstance(selection_context.get(k), str) or
+                    not re.fullmatch(r'[0-9a-fA-F]{1,8}', selection_context[k]) or
+                    not int(selection_context[k], 16)
+                    for k in ('common_view', 'buddy_list', 'ok_button')) or
+                    type(selection_context.get('ok_enabled')) is not bool):
+                raise ValueError('INVALID_NATIVE_SELECTION_CONTEXT')
+            result['confirmation_descriptor'] = dict(
+                handle, **{k: selection_context[k] for k in ('common_view', 'buddy_list', 'ok_button')},
+                ok_enabled=selection_context['ok_enabled'])
+        result['native_confirmation_control_verified'] = bool(confirmation_verified)
         cancel = tree.get('cancel_button')
         if (tree.get('cancel_count') == tree.get('cancel_caption_count') == 1 and
                 isinstance(cancel, str) and re.fullmatch(r'[0-9a-fA-F]+', cancel) and int(cancel, 16)):
@@ -474,6 +491,13 @@ def refresh(record, prepared):
                     **({'voice_origin_verified': False} if 'voice_origin_verified' in record else {}),
                     call_connection_verified=False, read_only=True)
     live = observe(prepared)
+    if record.get('intent', {}).get('operation') == 'group_invite':
+        # A normal button return or picker closure is not an independently
+        # observed invitation, nor an exact group-call binding.
+        still_open = any(handle_matches(dict(handle=record['selector_handle']), s)
+                         for s in live.get('member_selectors', []))
+        return dict(record, live=live, read_only=True, original_selector_open=still_open,
+                    call_connection_verified=False)
     if record.get('intent', {}).get('operation') == 'group_prepare':
         selectors = [s for s in live.get('member_selectors', []) if handle_matches(record, s)]
         if any(not s.get('group_binding_verified') or s.get('bound_group_chat') != record['chat_id']
@@ -625,6 +649,86 @@ def group_prepare(name, chat, request_id):
                     raise ValueError('UNEXPECTED_CALL_DURING_GROUP_PREPARATION')
                 time.sleep(.1)
             raise ValueError('GROUP_PICKER_NOT_OBSERVED_RESULT_UNKNOWN')
+        finally:
+            sending._persist(path, record)
+
+
+def group_invite(prepare_request_id, member_ids, request_id):
+    """Confirm an exact original voice picker once, with its entire selected set.
+
+    Submission remains unknown until an independent invitation outcome is
+    available. A successful normal button activation does not prove delivery.
+    """
+    if (not isinstance(member_ids, list) or not 1 <= len(member_ids) <= 256 or
+            any(not isinstance(uid, str) or not re.fullmatch(r'[1-9][0-9]{0,19}', uid) or
+                int(uid) >= 2**64 for uid in member_ids) or len(set(member_ids)) != len(member_ids)):
+        raise ValueError('EXACT_NONEMPTY_UNIQUE_GROUP_MEMBER_IDS_REQUIRED')
+    members = sorted(member_ids, key=int)
+    with lock(), sending._lock():
+        parent_path = journal(prepare_request_id)
+        origin = read_private(parent_path)
+        intent = dict(operation='group_invite', account=origin['account'], chat=origin['chat_id'],
+                      prepare_request_id=prepare_request_id, member_ids=members)
+        path = journal(request_id)
+        old = replay(path, intent)
+        if old:
+            return old
+        if origin.get('submission_request_id'):
+            raise ValueError('GROUP_PREPARATION_ALREADY_SUBMITTED_QUERY_ORIGINAL_REQUEST')
+        prepared = context(origin['account'], origin['chat_id'])
+        current = refresh(origin, prepared)
+        selector = current.get('selector')
+        if (current.get('status') != 'member_selector_open' or not current.get('current_selector_matches') or
+                current.get('voice_origin_verified') is not True or not isinstance(selector, dict) or
+                selector.get('selector_purpose_verified') is not True):
+            raise ValueError('EXACT_ORIGINAL_NORMAL_VOICE_PICKER_REQUIRED')
+        live = current['live']
+        if live['active'] or live['incoming'] or len(live.get('member_selectors', [])) != 1:
+            raise ValueError('ONE_IDLE_ORIGINAL_GROUP_PICKER_REQUIRED')
+        if (selector.get('native_selected_member_model_verified') is not True or
+                set(selector['native_selected_member_ids']) != set(members) or
+                prepared['value']['self_id'] in members):
+            raise ValueError('ENTIRE_NATIVE_SELECTED_SET_MUST_MATCH_EXPECTED_MEMBERS')
+        if (selector.get('native_confirmation_control_verified') is not True or
+                not selector['confirmation_descriptor']['ok_enabled']):
+            raise ValueError('EXACT_ENABLED_NORMAL_GROUP_CONFIRM_CONTROL_REQUIRED')
+        for other in path.parent.glob('*.json'):
+            if other == parent_path:
+                continue
+            record = read_private(other)
+            if record.get('account_scope') == current['account_scope'] and record.get('status') in UNKNOWN:
+                raise ValueError('CALL_OUTCOME_UNKNOWN_QUERY_OR_RESOLVE_ORIGINAL_REQUEST')
+        descriptor, callback = selector['confirmation_descriptor'], selector['group_call_callback']
+        payload = struct.pack('<IIIIIIIII', *(int(descriptor[k], 16)
+                              for k in ('root', 'ok_button', 'common_view', 'buddy_list')),
+                              int(callback['object'], 16), int(callback['chat_view'], 16),
+                              callback['response_limit'], int(callback['response_flag']), len(members))
+        payload += b''.join(struct.pack('<Q', int(uid)) for uid in members)
+        checked, body = dispatch(prepared, 1, 7, descriptor, payload)
+        if not checked.get('ok') or not body or body.get('group_submit_guard_verified') is not True:
+            return dict(ok=False, code='GROUP_SUBMISSION_PREFLIGHT_FAILED', native=checked,
+                        native_result=body, invitation_performed=False, automatic_retry_allowed=False)
+        record = dict(request_id=request_id, account=origin['account'], account_scope=current['account_scope'],
+                      chat_id=origin['chat_id'], process=current['process'], intent=intent,
+                      selector_handle=selector['handle'], status='group_submission_unknown',
+                      expected_member_ids=members, ok=False, created_at=time.time(),
+                      voice_origin_verified_before_submission=True, full_selected_set_verified_before_submission=True,
+                      invitation_performed=None, call_connection_verified=False, automatic_retry_allowed=False)
+        sending._persist(path, record)
+        # Link the preparation before entering native code too. A different
+        # request ID cannot re-confirm this same picker after a timeout.
+        current['submission_request_id'] = request_id
+        sending._persist(parent_path, current)
+        try:
+            with desktop_session():
+                native, body = dispatch(prepared, 2, 7, descriptor, payload)
+            record.update(native=native, native_result=body)
+            if native.get('state') == 2 and not native.get('native_action_entered'):
+                record.update(status='failed_no_invitation', invitation_performed=False)
+            record.update(live=observe(prepared))
+            record['original_selector_open'] = any(s['handle'] == selector['handle']
+                                                   for s in record['live'].get('member_selectors', []))
+            return record
         finally:
             sending._persist(path, record)
 
@@ -860,6 +964,10 @@ def add_parser(sub):
         item.add_argument('--request-id', required=True)
         if command == 'resolve':
             item.add_argument('--ended', action='store_true', required=True)
+    item = commands.add_parser('group-invite', help='Confirm the entire selected set once; real group acceptance pending')
+    item.add_argument('--prepare-request-id', required=True)
+    item.add_argument('--request-id', required=True)
+    item.add_argument('--member-id', action='append', required=True, dest='member_ids')
     item = commands.add_parser('play', help='Wait for this private call to connect, then route specified PCM WAV')
     item.add_argument('--request-id', required=True)
     item.add_argument('--audio-request-id', required=True)
@@ -876,6 +984,8 @@ def run(args):
         return start(args.account, args.chat, args.request_id)
     if args.call_command == 'group-prepare':
         return group_prepare(args.account, args.chat, args.request_id)
+    if args.call_command == 'group-invite':
+        return group_invite(args.prepare_request_id, args.member_ids, args.request_id)
     if args.call_command == 'answer':
         return answer(args.account, args.invitation_token, args.request_id)
     if args.call_command == 'selector-cancel':

@@ -1,7 +1,8 @@
 /* Version-bound normal UI voice controls, executed on the verified owner UI thread.
  * Operations: 0 inspect/hangup, 1 answer, 2 private-call start,
  * 3 cancel an exact normal member picker, 4 local CRT warmup,
- * 5 toggle one exact local member checkbox, 6 open an exact group picker.
+ * 5 toggle one exact local member checkbox, 6 open an exact group picker,
+ * 7 confirm an original voice picker with the entire expected selected set.
  * No private VoIP-engine ABI, fixed coordinates, or native message submission. */
 #include "message_hook.h"
 #include "selection_snapshot.h"
@@ -56,7 +57,7 @@ static BOOL reading_selector;
 static void *requested_checkbox;static unsigned requested_checkbox_count;
 static Trial *trial;static HWND tree_window;static unsigned nodes;static size_t used;static BOOL complete;static RECT viewport;
 static void *hang_outer,*hang_inner;static unsigned outer_count,inner_count;static int button_kind;static void *answer_button;static unsigned answer_count;static int answer_kind;static void *inviter_name,*invite_tips;static unsigned inviter_count,tips_count,reject_count;
-static void *cancel_button,*selector_title;static unsigned cancel_count,selector_title_count,cancel_caption_count;
+static void *cancel_button,*ok_button,*selector_title;static unsigned cancel_count,ok_count,selector_title_count,cancel_caption_count,ok_caption_count;
 static BOOL named(void *node,const WCHAR *expected) {
  const WCHAR *n=string_data((unsigned char*)node+0x78);size_t len=wcslen(expected);
  return valid((void*)n,(unsigned)(len+1)*2)&&!memcmp(n,expected,(len+1)*2);
@@ -91,6 +92,11 @@ static void walk(void *control,void *parent,unsigned depth) {
  if(named(control,L"reject_btn"))reject_count++;
  if(named(control,L"selectedtitle")){selector_title=control;selector_title_count++;}
  if(named(control,L"cancelbtn")&&complete_type_is(control,".?AVWButton@ui@wework@@")&&type_has(control,".?AVCButtonLayoutUI@DuiLib@@")){cancel_button=control;cancel_count++;}
+ if(named(control,L"okbtn")&&complete_type_is(control,".?AVWButton@ui@wework@@")&&type_has(control,".?AVCButtonLayoutUI@DuiLib@@")){ok_button=control;ok_count++;}
+ if(ok_button&&named(control,L"ww_btn_text")&&below(control,ok_button)) {
+  const WCHAR *caption=string_data((unsigned char*)control+0x11c);
+  if(valid((void*)caption,sizeof(L"确定"))&&!memcmp(caption,L"确定",sizeof(L"确定")))ok_caption_count++;
+ }
  if(cancel_button&&named(control,L"ww_btn_text")&&below(control,cancel_button)) {
   const WCHAR *caption=string_data((unsigned char*)control+0x11c);
   if(valid((void*)caption,sizeof(L"取消"))&&!memcmp(caption,L"取消",sizeof(L"取消")))cancel_caption_count++;
@@ -202,7 +208,7 @@ static BOOL CALLBACK visible_voice(HWND h,LPARAM flag) {
  return TRUE;
 }
 static void verify(Trial *t) {
- if((t->mode!=1&&t->mode!=2)||t->input_kind>6){t->failure=80;return;}
+ if((t->mode!=1&&t->mode!=2)||t->input_kind>7){t->failure=80;return;}
  unsigned char *base=(unsigned char*)GetModuleHandleW(NULL);
  const unsigned char prologue[]={0x66,0x90,0x55,0x8b,0xec,0x6a,0xff,0x68};
  if(memcmp(base+0x5a25690,prologue,sizeof(prologue))){t->failure=81;return;}
@@ -268,7 +274,7 @@ static void verify(Trial *t) {
   void *window=(void*)(uintptr_t)GetWindowLongPtrW(candidate,GWLP_USERDATA);
   if(pid!=t->pid||thread!=t->tid||!IsWindowVisible(candidate)||!GetClassNameW(candidate,cls,128)||!valid(window,0x200)||!type_has(window,".?AVWindowImplBase@DuiLib@@")||*(HWND*)((unsigned char*)window+4)!=candidate){t->failure=94;return;}
   if(!wcscmp(cls,L"weWorkSelectUser")) {
-   if((!complete_type_is(window,".?AVCSelectUserFrame@ui@wework@@")&&!complete_type_is(window,".?AVCSelectUserFrame2@ui@wework@@"))||(t->mode!=1&&t->input_kind!=3&&t->input_kind!=5)){t->failure=107;return;}
+   if((!complete_type_is(window,".?AVCSelectUserFrame@ui@wework@@")&&!complete_type_is(window,".?AVCSelectUserFrame2@ui@wework@@"))||(t->mode!=1&&t->input_kind!=3&&t->input_kind!=5&&t->input_kind!=7)){t->failure=107;return;}
    selector_window=TRUE;
   } else if(wcsncmp(cls,L"WXworkWindow",12)&&wcsncmp(cls,L"WeWorkWindow",12)){t->failure=94;return;}
   ui_manager=(unsigned char*)window+0x44;
@@ -284,7 +290,7 @@ static void verify(Trial *t) {
  }
  reading_selector=selector_window;requested_checkbox=NULL;requested_checkbox_count=0;
  tree_parent=get_parent;tree_paint=get_paint;tree_pos=get_pos;trial=t;tree_window=paint;nodes=0;used=0;complete=TRUE;hang_outer=NULL;hang_inner=NULL;outer_count=0;inner_count=0;button_kind=0;answer_button=NULL;answer_count=0;answer_kind=0;inviter_name=NULL;invite_tips=NULL;inviter_count=0;tips_count=0;reject_count=0;
- cancel_button=NULL;selector_title=NULL;cancel_count=0;selector_title_count=0;cancel_caption_count=0;
+ cancel_button=NULL;ok_button=NULL;selector_title=NULL;cancel_count=0;ok_count=0;selector_title_count=0;cancel_caption_count=0;ok_caption_count=0;
  if(!GetClientRect(paint,&viewport)){t->failure=93;return;}
  used+=(size_t)snprintf(t->serialized,CARD_MAX,"{\"nodes\":[");
  void *root=get_root(ui_manager);walk(root,NULL,0);
@@ -310,21 +316,78 @@ static void verify(Trial *t) {
   if(bound_group&&group_callback(frame,base,first,&callback,capture)&&used+350<CARD_MAX&&t->serialized[used-1]=='}') {
    used--;used+=(size_t)snprintf(t->serialized+used,CARD_MAX-used,",\"group_call_callback\":{\"verified\":true,\"object\":\"%lx\",\"chat_view\":\"%lx\",\"response_limit\":%lu,\"response_flag\":%s}}",callback,capture[1],capture[2],capture[3]&255?"true":"false");
   }
-  /* This is a snapshot of the final getter's version-bound input vectors,
-   * not a call to that getter, a confirmation action, or proof of voice use. */
-  SelectionSnapshot selected;const unsigned char getter_code[]={0x8b,0x98,0xb4,0x06,0,0,0x8b,0xb0,0xb0,0x06,0,0};
-  BOOL model_ok=!memcmp(base+0x6f07e7b,getter_code,sizeof(getter_code))&&
-   selection_snapshot_read((uint32_t)(uintptr_t)frame,selection_read,&selected);
+  /* onOkButtonClick copies the live BuddyList vector into frame+0x6b0.
+   * The latter is a result buffer and is NOT the pre-confirmation model. */
+  SelectionSnapshot selected;memset(&selected,0,sizeof(selected));
+  const unsigned char common_code[]={0x8b,0x89,0x04,0x06,0,0};
+  const unsigned char buddy_code[]={0x8d,0x81,0xfc,0x05,0,0,0xc3};
+  unsigned char *common=NULL,*buddy=NULL;
+  BOOL linked=valid((unsigned char*)frame+0xc4c,4);
+  if(linked) {
+   common=*(unsigned char**)((unsigned char*)frame+0xc4c);
+   linked=complete_type_is(common,".?AVSelectUserCommonView@ui@wework@@")&&valid(common,0x6c4)&&
+    *(void**)(common+0x6c0)==(unsigned char*)frame+0x5b8&&tree_paint(common)==paint;
+  }
+  if(linked) {
+   buddy=*(unsigned char**)(common+0x604);
+   linked=complete_type_is(buddy,".?AVBuddyList@ui@wework@@")&&valid(buddy,0x608)&&
+    named(buddy,L"currentbuddylist")&&below(buddy,common)&&tree_paint(buddy)==paint;
+  }
+  BOOL model_ok=linked&&!memcmp(base+0x6eff290,common_code,sizeof(common_code))&&
+   !memcmp(base+0x3eefde0,buddy_code,sizeof(buddy_code))&&
+   selection_snapshot_read((uint32_t)(uintptr_t)buddy,(uint32_t)(uintptr_t)frame,selection_read,&selected)&&
+   *(unsigned char**)((unsigned char*)frame+0xc4c)==common&&*(unsigned char**)(common+0x604)==buddy&&
+   *(void**)(common+0x6c0)==(unsigned char*)frame+0x5b8;
   if(used+7000<CARD_MAX&&t->serialized[used-1]=='}') {
    used--;used+=(size_t)snprintf(t->serialized+used,CARD_MAX-used,",\"selected_member_model\":{\"verified\":%s",model_ok?"true":"false");
    if(model_ok) {
-    used+=(size_t)snprintf(t->serialized+used,CARD_MAX-used,",\"source\":\"classic_final_selection_vectors\",\"count\":%u,\"object_count\":%u,\"additional_count\":%u,\"ids\":[",selected.count,selected.object_count,selected.additional_count);
+    used+=(size_t)snprintf(t->serialized+used,CARD_MAX-used,",\"source\":\"classic_live_buddy_selection\",\"count\":%u,\"object_count\":%u,\"additional_count\":%u,\"ids\":[",selected.count,selected.object_count,selected.additional_count);
     for(unsigned i=0;i<selected.count;i++)used+=(size_t)snprintf(t->serialized+used,CARD_MAX-used,"%s\"%llu\"",i?",":"",(unsigned long long)selected.ids[i]);
     used+=(size_t)snprintf(t->serialized+used,CARD_MAX-used,"]");
    }
    used+=(size_t)snprintf(t->serialized+used,CARD_MAX-used,"}}");
   }
+  if(model_ok&&complete&&ok_count==1&&ok_caption_count==1&&*(void**)(common+0x61c)==ok_button&&
+     tree_paint(ok_button)==paint&&tree_visible(ok_button)&&used+350<CARD_MAX&&t->serialized[used-1]=='}') {
+   BooleanGetter enabled=NULL;FARPROC fn=GetProcAddress(dui,"?IsEnabled@CControlUI@DuiLib@@UBE_NXZ");memcpy(&enabled,&fn,sizeof(fn));
+   if(enabled) {
+    used--;used+=(size_t)snprintf(t->serialized+used,CARD_MAX-used,",\"selection_context\":{\"verified\":true,\"common_view\":\"%lx\",\"buddy_list\":\"%lx\",\"ok_button\":\"%lx\",\"ok_enabled\":%s}}",(DWORD)(uintptr_t)common,(DWORD)(uintptr_t)buddy,(DWORD)(uintptr_t)ok_button,enabled(ok_button)?"true":"false");
+   }
+  }
+  if(t->input_kind==7) {
+   /* Validate before the generic mode-1 return; preflight and activation
+    * must have the SAME full-set and original-callback guards. */
+   DWORD expected[9]={0};
+   if(t->payload_size<44||t->payload_size>36+SELECTION_LIMIT*8){t->failure=118;return;}
+   memcpy(expected,t->payload,sizeof(expected));
+   if(!model_ok||!complete||!bound_group||strcmp(first,t->chat)||!callback||
+      ok_count!=1||ok_caption_count!=1||selector_title_count!=1||
+      expected[0]!=(DWORD)(uintptr_t)frame||expected[1]!=(DWORD)(uintptr_t)ok_button||
+      expected[2]!=(DWORD)(uintptr_t)common||expected[3]!=(DWORD)(uintptr_t)buddy||
+      expected[4]!=callback||expected[5]!=capture[1]||expected[6]!=capture[2]||
+      expected[7]!=(capture[3]&255)||!expected[8]||expected[8]!=selected.count||
+      t->payload_size!=36+expected[8]*8||*(void**)(common+0x61c)!=ok_button||
+      tree_paint(ok_button)!=paint||!tree_visible(ok_button)||!named(ok_button,L"okbtn")) {t->failure=119;return;}
+   const WCHAR *title=string_data((unsigned char*)selector_title+0x11c);
+   if(!valid((void*)title,sizeof(L"选择联系人"))||memcmp(title,L"选择联系人",sizeof(L"选择联系人"))){t->failure=119;return;}
+   if(!selection_snapshot_matches(&selected,t->payload+36,expected[8],t->expected_self_id)){t->failure=120;return;}
+   BooleanGetter enabled=NULL,activate=NULL;FARPROC fn=GetProcAddress(dui,"?IsEnabled@CControlUI@DuiLib@@UBE_NXZ");memcpy(&enabled,&fn,sizeof(fn));
+   fn=GetProcAddress(dui,"?Activate@CButtonLayoutUI@DuiLib@@UAE_NXZ");memcpy(&activate,&fn,sizeof(fn));
+   if(!enabled||!activate||!enabled(ok_button)){t->failure=121;return;}
+   SelectionSnapshot again;DWORD again_callback=0,again_capture[4]={0};
+   if(!selection_snapshot_read((uint32_t)(uintptr_t)buddy,(uint32_t)(uintptr_t)frame,selection_read,&again)||
+      memcmp(&again,&selected,sizeof(selected))||!group_callback(frame,base,first,&again_callback,again_capture)||
+      callback!=again_callback||memcmp(capture,again_capture,sizeof(capture))||
+      *(unsigned char**)((unsigned char*)frame+0xc4c)!=common||*(unsigned char**)(common+0x604)!=buddy||
+      *(void**)(common+0x6c0)!=(unsigned char*)frame+0x5b8||*(void**)(common+0x61c)!=ok_button){t->failure=122;return;}
+   if(t->mode==1) {
+    t->returned=1;t->rich_size=(DWORD)snprintf(t->serialized,CARD_MAX,"{\"group_submit_guard_verified\":true,\"expected_selected_count\":%u,\"invitation_observed\":false}",selected.count);return;
+   }
+   t->send_entered=1;unsigned char activated=activate(ok_button);t->returned=1;
+   t->rich_size=(DWORD)snprintf(t->serialized,CARD_MAX,"{\"normal_confirm_button_returned\":true,\"activated\":%s,\"expected_selected_count\":%u,\"invitation_observed\":false,\"automatic_retry_allowed\":false}",activated?"true":"false",selected.count);return;
+  }
  }
+ if(t->input_kind==7){t->failure=118;return;}
  t->rich_size=(DWORD)used;
  if(t->mode==1){t->returned=1;return;}
  if(t->input_kind==5) {

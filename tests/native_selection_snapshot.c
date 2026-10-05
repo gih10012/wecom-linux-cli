@@ -12,7 +12,7 @@ static void put(uint32_t address,uint32_t value){memcpy(memory+address,&value,4)
 static void uid(uint32_t address,uint64_t value){memcpy(memory+address,&value,8);}
 static void setup(void) {
  memset(memory,0,sizeof(memory));vector_reads=0;change_vector=0;
- put(0x16b0,0x3000);put(0x16b4,0x3010);put(0x16b8,0x3010);
+ put(0x15fc,0x3000);put(0x1600,0x3010);put(0x1604,0x3010);
  put(0x3000,0x4000);put(0x3004,0x4200);put(0x3008,0x4300);put(0x300c,0x4400);
  uid(0x4000,9007199254741111ULL);put(0x4050,2);
  uid(0x4300,9007199254742222ULL);put(0x4350,6);
@@ -23,25 +23,39 @@ static void check(int result,const char *name){if(!result){fprintf(stderr,"%s\n"
 int main(void) {
  SelectionSnapshot out;
  memset(memory,0,sizeof(memory));
- check(selection_snapshot_read(0x1000,read_memory,&out)&&out.count==0,"empty model");
+ check(selection_snapshot_read(0x1000,0x1000,read_memory,&out)&&out.count==0,"empty model");
  setup();
- check(selection_snapshot_read(0x1000,read_memory,&out)&&out.count==3&&out.object_count==2&&out.additional_count==2&&
+ /* The pre-confirmation result buffer stays empty despite live members. */
+ check(selection_snapshot_read(0x1000,0x1000,read_memory,&out)&&out.count==3&&out.object_count==2&&out.additional_count==2&&
        out.ids[0]==9007199254741111ULL&&out.ids[1]==9007199254742222ULL&&out.ids[2]==1234,
        "entire model includes off-screen members and deduplicates additional IDs");
+ uint64_t expected[3]={1234,9007199254742222ULL,9007199254741111ULL};
+ check(selection_snapshot_matches(&out,(const unsigned char*)expected,3,888),"exact set allows a different order and includes off-screen members");
+ check(!selection_snapshot_matches(&out,(const unsigned char*)expected,2,888),"missing off-screen member rejected");
+ check(!selection_snapshot_matches(&out,(const unsigned char*)expected,3,1234),"inviting self rejected");
+ expected[1]=1234;
+ check(!selection_snapshot_matches(&out,(const unsigned char*)expected,3,888),"duplicate expected member rejected");
+ expected[1]=999;
+ check(!selection_snapshot_matches(&out,(const unsigned char*)expected,3,888),"unexpected member rejected");
+ check(!selection_snapshot_matches(&out,(const unsigned char*)expected,0,888),"empty submission rejected");
  setup();put(0x4350,7);
- check(!selection_snapshot_read(0x1000,read_memory,&out)&&out.count==0,"unknown row kind must not be silently skipped");
+ check(!selection_snapshot_read(0x1000,0x1000,read_memory,&out)&&out.count==0,"unknown row kind must not be silently skipped");
  setup();uid(0x4300,9007199254741111ULL);
- check(!selection_snapshot_read(0x1000,read_memory,&out)&&out.count==0,"duplicate selected objects rejected");
+ check(!selection_snapshot_read(0x1000,0x1000,read_memory,&out)&&out.count==0,"duplicate selected objects rejected");
  setup();uid(0x4000,0);
- check(!selection_snapshot_read(0x1000,read_memory,&out)&&out.count==0,"zero user identity rejected");
- setup();put(0x16b4,0x3004);
- check(!selection_snapshot_read(0x1000,read_memory,&out)&&out.count==0,"partial shared pointer rejected");
- setup();put(0x16b4,0x3000+257*8);put(0x16b8,0x3000+257*8);
- check(!selection_snapshot_read(0x1000,read_memory,&out)&&out.count==0,"bounded snapshot refuses oversized model");
+ check(!selection_snapshot_read(0x1000,0x1000,read_memory,&out)&&out.count==0,"zero user identity rejected");
+ setup();put(0x1600,0x3004);
+ check(!selection_snapshot_read(0x1000,0x1000,read_memory,&out)&&out.count==0,"partial shared pointer rejected");
+ setup();put(0x1600,0x3000+257*8);put(0x1604,0x3000+257*8);
+ check(!selection_snapshot_read(0x1000,0x1000,read_memory,&out)&&out.count==0,"bounded snapshot refuses oversized model");
  setup();put(0x3000,0xfffffff0);
- check(!selection_snapshot_read(0x1000,read_memory,&out)&&out.count==0,"wrapped member pointer rejected");
+ check(!selection_snapshot_read(0x1000,0x1000,read_memory,&out)&&out.count==0,"wrapped member pointer rejected");
  setup();change_vector=1;
- check(!selection_snapshot_read(0x1000,read_memory,&out)&&out.count==0,"changed shared pointer vector rejected");
- check(!selection_snapshot_read(0xfffffff0,read_memory,&out),"wrapped frame rejected");
+ check(!selection_snapshot_read(0x1000,0x1000,read_memory,&out)&&out.count==0,"changed shared pointer vector rejected");
+ check(!selection_snapshot_read(0x1000,0xfffffff0,read_memory,&out),"wrapped frame rejected");
+ setup();put(0x15f0,0x6000);put(0x15f4,0x6008);put(0x15f8,0x6008);
+ check(!selection_snapshot_read(0x1000,0x1000,read_memory,&out),"nonindividual selections cannot be silently omitted");
+ setup();put(0x16b0,0x6000);put(0x16b4,0x6008);put(0x16b8,0x6008);uid(0x6000,999);
+ check(selection_snapshot_read(0x1000,0x1000,read_memory,&out)&&out.count==3,"stale finalized result is not a live selected member");
  return 0;
 }
