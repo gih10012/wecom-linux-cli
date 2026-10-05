@@ -77,7 +77,7 @@ def desktop_session():
 
 def artifacts():
     source = Path(__file__).parent / '_native'
-    files = ('call_hook.c', 'call_probe.c', 'message_hook.h')
+    files = ('call_hook.c', 'call_probe.c', 'message_hook.h', 'selection_snapshot.h')
     digest = hashlib.sha256(b'normal-private-call-v1\0' + b''.join(
         (source / name).read_bytes() for name in files)).hexdigest()
     folder = sending._folder(private_root() / 'native' / digest)
@@ -219,6 +219,24 @@ def classify(prepared, window, tree):
                     node_count=tree.get('node_count'), read_only=True,
                     selector_purpose_verified=False, member_identity_verified=bool(members),
                     selection_verified=False, call_connection_verified=False)
+        model = tree.get('selected_member_model')
+        if window_type == 'CSelectUserFrame' and isinstance(model, dict) and model.get('verified') is True:
+            ids = model.get('ids')
+            counts = [model.get(k) for k in ('count', 'object_count', 'additional_count')]
+            if (model.get('source') != 'classic_final_selection_vectors' or not isinstance(ids, list) or
+                    any(type(c) is not int or not 0 <= c <= 256 for c in counts) or counts[0] != len(ids) or
+                    not counts[1] <= counts[0] <= counts[1] + counts[2] or
+                    any(not isinstance(uid, str) or not re.fullmatch(r'[1-9][0-9]{0,19}', uid) or
+                        int(uid) >= 2**64 for uid in ids) or len(set(ids)) != len(ids)):
+                raise ValueError('INVALID_NATIVE_SELECTED_MEMBER_MODEL')
+            selected = set(ids)
+            if any(m['selected'] != (m['native_id'] in selected) for m in members):
+                raise ValueError('NATIVE_SELECTION_DISAGREES_WITH_VISIBLE_CHECKBOX')
+            result.update(native_selected_member_ids=ids, native_selected_member_count=len(ids),
+                          native_selected_member_model_verified=True)
+        else:
+            result.update(native_selected_member_ids=None, native_selected_member_count=None,
+                          native_selected_member_model_verified=False)
         cancel = tree.get('cancel_button')
         if (tree.get('cancel_count') == tree.get('cancel_caption_count') == 1 and
                 isinstance(cancel, str) and re.fullmatch(r'[0-9a-fA-F]+', cancel) and int(cancel, 16)):

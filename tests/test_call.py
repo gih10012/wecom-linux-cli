@@ -127,6 +127,48 @@ class CallTests(unittest.TestCase):
         for raw in ['S:123_456', 'R:１２３', 'R:', 'R:1"bad']:
             self.assertFalse(self.group_selector(raw)['group_binding_verified'])
 
+    def test_native_selected_model_includes_offscreen_ids_without_proving_invitation(self):
+        tree = self.selector_tree()
+        tree['nodes'] += [dict(pointer='60', control_type='WCheckbox', user_data='456', self_selected=True)]
+        tree['selected_member_model'] = dict(verified=True, source='classic_final_selection_vectors',
+                                            ids=['456', '789'], count=2, object_count=2, additional_count=0)
+        result = call.classify(self.prepared(), dict(kind='member_selector', hwnd='10', root='20'), tree)
+        self.assertEqual(result['selected_visible_member_ids'], ['456'])
+        self.assertEqual(result['native_selected_member_ids'], ['456', '789'])
+        self.assertTrue(result['native_selected_member_model_verified'])
+        for field in ('selection_verified', 'selector_purpose_verified', 'call_connection_verified'):
+            self.assertFalse(result[field])
+        empty = dict(verified=True, source='classic_final_selection_vectors', ids=[], count=0,
+                     object_count=0, additional_count=0)
+        result = call.classify(self.prepared(), dict(kind='member_selector', hwnd='10', root='20'),
+                               dict(self.selector_tree(), selected_member_model=empty))
+        self.assertTrue(result['native_selected_member_model_verified'])
+        self.assertEqual(result['native_selected_member_ids'], [])
+        creation = dict(kind='member_selector', hwnd='10', root='20', selector_type='CSelectUserFrame2')
+        tree = self.selector_tree()
+        tree['nodes'] = [dict(n, text='发起群聊') if n['name'] == 'selectedtitle' else n for n in tree['nodes']]
+        result = call.classify(self.prepared(), creation, dict(tree, selected_member_model=empty))
+        self.assertFalse(result['native_selected_member_model_verified'])
+        self.assertIsNone(result['native_selected_member_ids'])
+
+    def test_native_model_disagreement_invalid_ids_and_unknown_layout_are_not_trusted(self):
+        tree = self.selector_tree()
+        tree['nodes'] += [dict(pointer='60', control_type='WCheckbox', user_data='456', self_selected=False)]
+        model = dict(verified=True, source='classic_final_selection_vectors', ids=['456'], count=1,
+                     object_count=1, additional_count=0)
+        window = dict(kind='member_selector', hwnd='10', root='20')
+        with self.assertRaisesRegex(ValueError, 'DISAGREES_WITH_VISIBLE'):
+            call.classify(self.prepared(), window, dict(tree, selected_member_model=model))
+        for change in (dict(ids=['0']), dict(ids=['18446744073709551616']), dict(count=True),
+                       dict(ids=['789', '789'], count=2), dict(source='creation_layout'),
+                       dict(object_count=2), dict(ids=['７８９'])):
+            with self.assertRaisesRegex(ValueError, 'INVALID_NATIVE_SELECTED'):
+                call.classify(self.prepared(), window, dict(tree, selected_member_model=dict(model, **change)))
+        for raw in (None, dict(verified=False), dict(model, verified=1)):
+            result = call.classify(self.prepared(), window, dict(tree, selected_member_model=raw))
+            self.assertFalse(result['native_selected_member_model_verified'])
+            self.assertIsNone(result['native_selected_member_ids'])
+
     def group_preparation_patches(self, native):
         selector = self.group_selector()
         return (patch.object(call, 'context', side_effect=self.prepared),

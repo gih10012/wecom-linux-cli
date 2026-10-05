@@ -322,7 +322,19 @@ individual checkbox metadata and its own checked state, using the formal
 actual group membership. In creation pickers only the verified external
 individual metadata format is exposed as a member; department metadata and
 unknown formats are excluded. These are visible rows, not a complete member
-list or the full selection after scrolling. The picker remains separate from
+list. A classic picker additionally reports `native_selected_member_ids` and
+`native_selected_member_count` from both version-bound input vectors used by
+the client's final selection getter. This read runs on the verified UI thread,
+checks bounds, individual row kinds, unique identities, and unchanged vector
+and member fields, and merges additional IDs with the client's deduplication
+semantics. It also requires agreement with visible checkbox states. An
+unavailable model returns null fields and `native_selected_member_model_verified=false`,
+distinct from a verified empty list. Creation pickers have a different layout
+and do not expose this model. This verifies the snapshot's structure, not a
+voice invitation; nonempty and off-screen real-client acceptance is still pending.
+Installed-command acceptance verified a real empty model, open/ended status,
+read-only request replay and normal cancellation with unchanged group history.
+The picker remains separate from
 incoming and active calls; neither a selected member nor its caption proves
 an invitation or connection. Close or cancel it normally before another
 call. Target preflight, start, answer and unresolved-call resolution refuse a

@@ -4,10 +4,15 @@
  * 5 toggle one exact local member checkbox, 6 open an exact group picker.
  * No private VoIP-engine ABI, fixed coordinates, or native message submission. */
 #include "message_hook.h"
+#include "selection_snapshot.h"
 static BOOL valid(void *address,unsigned length) {
  MEMORY_BASIC_INFORMATION m;uintptr_t p=(uintptr_t)address;
  return p&&VirtualQuery(address,&m,sizeof(m))==sizeof(m)&&m.State==MEM_COMMIT&&
   !(m.Protect&(PAGE_NOACCESS|PAGE_GUARD))&&p>=(uintptr_t)m.BaseAddress&&p+length>=p&&p+length<=(uintptr_t)m.BaseAddress+m.RegionSize;
+}
+static int selection_read(uint32_t address,void *out,unsigned length) {
+ if(!valid((void*)(uintptr_t)address,length))return 0;
+ memcpy(out,(void*)(uintptr_t)address,length);return 1;
 }
 static DWORD *type_locator(void *control) {
  if(!valid(control,0x130))return NULL;
@@ -277,6 +282,20 @@ static void verify(Trial *t) {
   char first[128]={0},second[128]={0};void *frame=(void*)(uintptr_t)GetWindowLongPtrW(paint,GWLP_USERDATA);
   if(read_group_string(frame,0x7f8,first)&&read_group_string(frame,0x938,second)&&!strcmp(first,second)&&used+200<CARD_MAX&&t->serialized[used-1]=='}') {
    used--;used+=(size_t)snprintf(t->serialized+used,CARD_MAX-used,",\"bound_group_chat\":\"%s\",\"group_binding_verified\":true}",first);
+  }
+  /* This is a snapshot of the final getter's version-bound input vectors,
+   * not a call to that getter, a confirmation action, or proof of voice use. */
+  SelectionSnapshot selected;const unsigned char getter_code[]={0x8b,0x98,0xb4,0x06,0,0,0x8b,0xb0,0xb0,0x06,0,0};
+  BOOL model_ok=!memcmp(base+0x6f07e7b,getter_code,sizeof(getter_code))&&
+   selection_snapshot_read((uint32_t)(uintptr_t)frame,selection_read,&selected);
+  if(used+7000<CARD_MAX&&t->serialized[used-1]=='}') {
+   used--;used+=(size_t)snprintf(t->serialized+used,CARD_MAX-used,",\"selected_member_model\":{\"verified\":%s",model_ok?"true":"false");
+   if(model_ok) {
+    used+=(size_t)snprintf(t->serialized+used,CARD_MAX-used,",\"source\":\"classic_final_selection_vectors\",\"count\":%u,\"object_count\":%u,\"additional_count\":%u,\"ids\":[",selected.count,selected.object_count,selected.additional_count);
+    for(unsigned i=0;i<selected.count;i++)used+=(size_t)snprintf(t->serialized+used,CARD_MAX-used,"%s\"%llu\"",i?",":"",(unsigned long long)selected.ids[i]);
+    used+=(size_t)snprintf(t->serialized+used,CARD_MAX-used,"]");
+   }
+   used+=(size_t)snprintf(t->serialized+used,CARD_MAX-used,"}}");
   }
  }
  t->rich_size=(DWORD)used;
